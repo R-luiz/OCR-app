@@ -13,6 +13,7 @@ on:
           - deploy-and-smoke-test
           - health-check
           - purge-queue
+          - recycle-workers
         default: dry-run
       network_volume_id:
         description: "Network volume ID (strongly recommended — without one, every cold start re-downloads ~6.7 GB of weights)"
@@ -127,3 +128,12 @@ jobs:
         env:
           RUNPOD_API_KEY: ${{ secrets.RUNPOD_API_KEY }}
         run: python backend/deploy_runpod.py --purge-queue "${{ inputs.endpoint_id }}"
+
+      # Repointing an endpoint at a new template leaves its running workers alone, so
+      # they keep serving the old image and a deploy can appear to succeed while
+      # changing nothing. This drains them; the endpoint's config is restored after.
+      - name: Recycle workers
+        if: inputs.action == 'recycle-workers'
+        env:
+          RUNPOD_API_KEY: ${{ secrets.RUNPOD_API_KEY }}
+        run: python backend/deploy_runpod.py --recycle-workers "${{ inputs.endpoint_id }}"
