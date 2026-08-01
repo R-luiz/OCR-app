@@ -141,13 +141,19 @@ class RemoteOcrEngine @Inject constructor(
                     // Distinguishing "waiting for a GPU" from "actually parsing" matters
                     // here: a cold start can sit in IN_QUEUE for a minute or more while
                     // the worker pulls ~6.7 GB of weights.
-                    val stage = when (job.status) {
-                        RunPodJob.IN_PROGRESS -> OcrStage.RUNNING
-                        else -> OcrStage.QUEUED
-                    }
-                    if (stage != lastStage) {
-                        onStage(stage)
-                        lastStage = stage
+                    //
+                    // Terminal statuses report no stage at all: COMPLETED is not
+                    // IN_PROGRESS, so treating it like any other status would flash
+                    // "waiting for a worker" at the moment the job actually finished.
+                    if (!job.isTerminal) {
+                        val stage = when (job.status) {
+                            RunPodJob.IN_PROGRESS -> OcrStage.RUNNING
+                            else -> OcrStage.QUEUED
+                        }
+                        if (stage != lastStage) {
+                            onStage(stage)
+                            lastStage = stage
+                        }
                     }
                 }
                 job

@@ -46,6 +46,17 @@ page. Hence RunPod Serverless, which bills per second and scales to zero.
 
 ### Build and push
 
+`.github/workflows/backend-image.yml` builds and pushes the image on every push that
+touches `backend/`. It is published and anonymously pullable, so a RunPod endpoint can be
+pointed straight at:
+
+```
+ghcr.io/r-luiz/ocr-app/unlimited-ocr-worker:latest
+```
+
+37 layers, ~8.8 GB compressed — expect a slow first cold start on a fresh worker. To build
+it yourself instead:
+
 ```bash
 cd backend
 docker build -t <your-registry>/unlimited-ocr-worker:latest .
@@ -62,7 +73,8 @@ docker build --build-arg BASE_IMAGE=vllm/vllm-openai:unlimited-ocr-cu129 .
 
 ### Create the RunPod endpoint
 
-1. RunPod → Serverless → New Endpoint, pointing at your image.
+1. RunPod → Serverless → New Endpoint, pointing at
+   `ghcr.io/r-luiz/ocr-app/unlimited-ocr-worker:latest` (no registry credentials needed).
 2. **GPU:** 48 GB (L40S) recommended for 32K-context headroom. 24 GB is workable for
    single-page scans.
 3. **Attach a Network Volume.** `HF_HOME` is set to `/runpod-volume/huggingface-cache`, so
@@ -151,19 +163,20 @@ offers an editable raw view.
 
 ## Verification status
 
-Verified in this environment:
+Both halves build and test green in CI (`.github/workflows/android.yml`,
+`.github/workflows/backend-image.yml`):
 
-- `backend/test_handler.py` — **33 tests pass** (input parsing, base64/data-URL decoding,
-  special-token cleanup, page splitting, the no-repeat-ngram logits processor).
-- `MarkdownParser` and `MarkdownToPlainText` — **19 tests pass**, compiled and run on the
-  JVM.
-- The whole remote pipeline (`OcrEngine`, `RunPodCredentials`, `ImageNormalizer`,
-  `RunPodApi`, `RemoteOcrEngine`, `MarkdownToPlainText`) **type-checks clean** against real
-  Retrofit, OkHttp, kotlinx-serialization and an Android 13 platform jar.
+- **Android: 40 unit tests pass and `assembleDebug` produces an APK.** That covers the
+  `RemoteOcrEngine` submit-and-poll state machine against a MockWebServer, `ImageNormalizer`
+  downscaling, the `ScanDao` round-trip, and the Markdown parser/converter. The Compose,
+  Hilt (KSP), Room and ML Kit layers all compile.
+- **Backend: 33 handler tests pass** (input parsing, base64/data-URL decoding, special-token
+  cleanup, page splitting, the no-repeat-ngram logits processor).
 
-Not verified here: the Compose UI, Hilt wiring, Room, ML Kit, and the Robolectric-based
-tests (`RemoteOcrEngineTest`, `ImageNormalizerTest`, `ScanDaoTest`). Building those needs
-`dl.google.com` and `maven.google.com`, both of which were blocked by this environment's
-egress policy. Run `./gradlew assembleDebug testDebugUnitTest` on a machine with the
-Android SDK before trusting them; the dependency versions in
-`android/gradle/libs.versions.toml` may also need bumping to whatever is current.
+Download the APK from the **Android** workflow run's `ocr-app-debug` artifact.
+
+What CI does **not** prove: the worker has never run inference. A green image build means
+the container assembles, not that Unlimited-OCR produces correct output — GitHub runners
+have no GPU. The first real proof is `test_local.py` against a live endpoint. Nothing has
+been exercised on a physical Android device either, so camera capture, the photo picker,
+and PDF import are untested against real hardware.
