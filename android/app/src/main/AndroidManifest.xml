@@ -5,6 +5,11 @@
     <uses-permission android:name="android.permission.CAMERA" />
     <uses-permission android:name="android.permission.INTERNET" />
     <uses-permission android:name="android.permission.ACCESS_NETWORK_STATE" />
+    <!-- Only ever enforced on exactly API 28 (minSdk): API 29+ saves a generated QR code
+         via MediaStore, which needs no permission under scoped storage. -->
+    <uses-permission
+        android:name="android.permission.WRITE_EXTERNAL_STORAGE"
+        android:maxSdkVersion="28" />
 
     <uses-feature
         android:name="android.hardware.camera.any"
@@ -41,6 +46,17 @@
           tag drives model download for the unbundled play-services-mlkit-* variant,
           which this app does not use.
         -->
+
+        <!-- Shares generated QR code images without granting broad storage access. -->
+        <provider
+            android:name="androidx.core.content.FileProvider"
+            android:authorities="${applicationId}.fileprovider"
+            android:exported="false"
+            android:grantUriPermissions="true">
+            <meta-data
+                android:name="android.support.FILE_PROVIDER_PATHS"
+                android:resource="@xml/file_paths" />
+        </provider>
     </application>
 
 </manifest>
