@@ -1,0 +1,64 @@
+# Dumps the vLLM API surface of the worker image. Manual-only, no GPU, no RunPod.
+#
+# Exists because the alternative is guessing: the image pins whatever vLLM version
+# Baidu shipped, and its sampling/logits-processor API has changed across releases.
+# A four-minute pull here is far cheaper than a wrong guess, which costs a full
+# image rebuild, redeploy, and smoke test to discover.
+name: Introspect backend image
+
+on:
+  workflow_dispatch:
+
+jobs:
+  introspect:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Free disk space
+        run: |
+          sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc \
+                      /usr/local/share/boost "$AGENT_TOOLSDIRECTORY" \
+                      /usr/local/share/powershell /usr/share/swift || true
+          df -h /
+
+      - name: Pull the worker image
+        run: docker pull ghcr.io/r-luiz/ocr-app/unlimited-ocr-worker:latest
+
+      # Everything the handler needs to decide how to request a custom logits
+      # processor on this exact build, printed in one pass.
+      - name: Dump the sampling API
+        run: |
+          docker run --rm --entrypoint /usr/local/bin/ocr-worker-python \
+            ghcr.io/r-luiz/ocr-app/unlimited-ocr-worker:latest -c '
+          import inspect, os
+
+          import vllm
+
+          print("vllm version:", getattr(vllm, "__version__", "<unknown>"))
+          print("VLLM_USE_V1 env:", os.environ.get("VLLM_USE_V1", "<unset>"))
+
+          from vllm import LLM, SamplingParams
+
+          sig = inspect.signature(SamplingParams.__init__)
+          print("\nSamplingParams accepts logits_processors:",
+                "logits_processors" in sig.parameters)
+          print("SamplingParams params:", sorted(sig.parameters))
+
+          llm_sig = inspect.signature(LLM.__init__)
+          print("\nLLM accepts logits_processors:",
+                "logits_processors" in llm_sig.parameters)
+          print("LLM params:", sorted(llm_sig.parameters))
+
+          for name in (
+              "vllm.v1.sample.logits_processor",
+              "vllm.logits_process",
+              "vllm.sampling_params",
+          ):
+              try:
+                  mod = __import__(name, fromlist=["*"])
+              except Exception as exc:
+                  print(f"\n{name}: not importable ({type(exc).__name__}: {exc})")
+                  continue
+              exported = [n for n in dir(mod) if not n.startswith("_")]
+              print(f"\n{name} exports:", exported)
+          '
