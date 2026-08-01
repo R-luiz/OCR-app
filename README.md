@@ -54,8 +54,9 @@ pointed straight at:
 ghcr.io/r-luiz/ocr-app/unlimited-ocr-worker:latest
 ```
 
-37 layers, ~8.8 GB compressed — expect a slow first cold start on a fresh worker. To build
-it yourself instead:
+~8.8 GB compressed base image plus the ~6.7 GB of Unlimited-OCR weights, baked in at build
+time so a worker never has to reach the internet at cold start. To build it yourself
+instead:
 
 ```bash
 cd backend
@@ -77,9 +78,8 @@ docker build --build-arg BASE_IMAGE=vllm/vllm-openai:unlimited-ocr-cu129 .
    `ghcr.io/r-luiz/ocr-app/unlimited-ocr-worker:latest` (no registry credentials needed).
 2. **GPU:** 48 GB (L40S) recommended for 32K-context headroom. 24 GB is workable for
    single-page scans.
-3. **Attach a Network Volume.** `HF_HOME` is set to `/runpod-volume/huggingface-cache`, so
-   with a volume attached the ~6.7 GB of weights are downloaded once instead of on every
-   cold start (a 60–90 s penalty per start otherwise).
+3. **No network volume needed.** The weights are baked into the image (see above), so
+   there is nothing to download at cold start.
 4. Idle timeout ~60 s, max workers 1 to begin with.
 5. Copy the **endpoint ID**, and create an API key under Settings.
 

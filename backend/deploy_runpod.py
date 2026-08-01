@@ -32,9 +32,9 @@ TEMPLATE_NAME = "ocr-app-unlimited-ocr-template"
 # 48 GB gives headroom for the 32K context; 24 GB only fits single-page work.
 DEFAULT_GPU_IDS = "ADA_48_PRO,AMPERE_48"
 
-# The image alone is ~8.8 GB compressed and unpacks to appreciably more, and
-# without a network volume the 6.7 GB of weights land on container disk too.
-DEFAULT_CONTAINER_DISK_GB = 60
+# The image bakes in the ~6.7 GB of model weights at build time (see backend/Dockerfile),
+# on top of the ~8.8 GB compressed base image, so container disk needs headroom for both.
+DEFAULT_CONTAINER_DISK_GB = 80
 
 POLL_INTERVAL_SECONDS = 5
 
@@ -125,11 +125,11 @@ def deploy(runpod, args) -> str:
         image_name=args.image,
         is_serverless=True,
         container_disk_in_gb=args.container_disk_gb,
+        # MODEL_NAME/HF_HUB_OFFLINE are baked into the image itself (it points at the
+        # local weights snapshot dir); overriding MODEL_NAME here would silently send
+        # the worker back to downloading baidu/Unlimited-OCR from the Hub at startup.
         env={
-            "MODEL_NAME": "baidu/Unlimited-OCR",
             "MAX_MODEL_LEN": "32768",
-            # Only meaningful when a network volume is attached; harmless otherwise.
-            "HF_HOME": "/runpod-volume/huggingface-cache",
         },
     )
     template_id = template["id"]
@@ -344,7 +344,7 @@ def main() -> int:
         print(f"  endpoint name     {ENDPOINT_NAME}")
         print(f"  gpu               {args.gpu_ids}")
         print(f"  container disk    {args.container_disk_gb} GB")
-        print(f"  network volume    {args.network_volume_id or '(none — weights re-download on every cold start)'}")
+        print(f"  network volume    {args.network_volume_id or '(none — not required; weights are baked into the image)'}")
         print(f"  idle timeout      {args.idle_timeout}s")
         print(f"  workers           0..{args.workers_max}")
         if not args.dry_run:
@@ -357,13 +357,6 @@ def main() -> int:
     if balance_error:
         print(f"error: {balance_error}", file=sys.stderr)
         return 1
-
-    if not args.network_volume_id:
-        print(
-            "warning: no network volume. Every cold start will re-download ~6.7 GB of\n"
-            "         weights. Create one in the RunPod console and pass\n"
-            "         --network-volume-id / RUNPOD_NETWORK_VOLUME_ID.\n"
-        )
 
     try:
         endpoint_id = deploy(runpod, args)
