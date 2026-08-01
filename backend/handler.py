@@ -197,15 +197,20 @@ def split_pages(markdown: str, expected: int) -> list[dict[str, Any]]:
     return [{"index": i, "markdown": part} for i, part in enumerate(parts)]
 
 
+# Key under SamplingParams.extra_args carrying the per-request n-gram window. vLLM's
+# V1 engine registers logits processors at engine construction, not per request, so
+# extra_args is the only per-request channel left to vary the window between the
+# single-page (128) and multi-page (1024) configurations.
+EXTRA_ARG_NGRAM_WINDOW = "ngram_window"
+
+
 class NoRepeatNGramLogitsProcessor:
     """Bans n-grams already seen in a trailing window of the generated sequence.
 
     Reimplements the behavior of SGLang's ``DeepseekOCRNoRepeatNGramLogitProcessor``
-    against vLLM's logits-processor interface. Long OCR generations otherwise fall into
-    repetition loops, which is why Baidu's own examples always enable it.
-
-    Stateless by design: vLLM shares one ``SamplingParams`` across a request's steps and
-    makes no promise about per-sequence processor instances.
+    as a request-level callable ``(output_token_ids, logits) -> logits``, the shape
+    vLLM V1's ``AdapterLogitsProcessor`` wraps. Long OCR generations otherwise fall
+    into repetition loops, which is why Baidu's own examples always enable it.
     """
 
     def __init__(self, ngram_size: int = NGRAM_SIZE, window_size: int = NGRAM_WINDOW_MULTI):
@@ -236,11 +241,47 @@ class NoRepeatNGramLogitsProcessor:
         return logits
 
 
+def request_ngram_processor(extra_args: dict | None) -> NoRepeatNGramLogitsProcessor | None:
+    """Builds the per-request processor from ``SamplingParams.extra_args``, or None.
+
+    Pure glue, kept separate from the vLLM adapter below so it stays testable on a
+    machine with no vLLM installed.
+    """
+    window = (extra_args or {}).get(EXTRA_ARG_NGRAM_WINDOW)
+    if window is None:
+        return None
+    return NoRepeatNGramLogitsProcessor(NGRAM_SIZE, int(window))
+
+
 # --------------------------------------------------------------------------------------
 # vLLM engine
 # --------------------------------------------------------------------------------------
 
 _engine = None
+
+
+def _adapter_class():
+    """The engine-level wrapper for the per-request n-gram processor.
+
+    vLLM's V1 engine (the only engine in the image's 0.23 build — SamplingParams no
+    longer accepts ``logits_processors``) takes processor *classes* at LLM
+    construction and instantiates a request-level callable per request via
+    ``new_req_logits_processor``. Defined lazily because importing vllm requires the
+    GPU stack, and the pure helpers above must stay importable without it.
+    """
+    from vllm.v1.sample.logits_processor import AdapterLogitsProcessor
+
+    class NoRepeatNGramAdapter(AdapterLogitsProcessor):
+        def is_argmax_invariant(self) -> bool:
+            # Banning tokens rewrites their logits to -inf, which can change the
+            # argmax; claiming invariance would let vLLM skip this processor
+            # entirely under greedy sampling — exactly our temperature=0 case.
+            return False
+
+        def new_req_logits_processor(self, params):
+            return request_ngram_processor(getattr(params, "extra_args", None))
+
+    return NoRepeatNGramAdapter
 
 
 def get_engine():
@@ -256,6 +297,7 @@ def get_engine():
             max_model_len=MAX_MODEL_LEN,
             gpu_memory_utilization=GPU_MEMORY_UTILIZATION,
             limit_mm_per_prompt={"image": MAX_PAGES},
+            logits_processors=[_adapter_class()],
         )
     return _engine
 
@@ -265,11 +307,13 @@ def run_inference(request: OcrRequest) -> str:
 
     sampling = SamplingParams(
         temperature=0.0,
-        max_tokens=MAX_MODEL_LEN,
+        # None means "generate until EOS or the context is full". An explicit cap of
+        # MAX_MODEL_LEN here would be rejected outright: current vLLM refuses any
+        # request whose prompt tokens + max_tokens exceed max_model_len rather than
+        # clamping, and a multimodal prompt always occupies tokens.
+        max_tokens=None,
         skip_special_tokens=False,
-        logits_processors=[
-            NoRepeatNGramLogitsProcessor(NGRAM_SIZE, request.ngram_window),
-        ],
+        extra_args={EXTRA_ARG_NGRAM_WINDOW: request.ngram_window},
     )
 
     outputs = get_engine().generate(

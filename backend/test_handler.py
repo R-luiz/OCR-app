@@ -13,11 +13,14 @@ import pytest
 from PIL import Image
 
 from handler import (
+    EXTRA_ARG_NGRAM_WINDOW,
     InvalidInput,
+    NGRAM_SIZE,
     NoRepeatNGramLogitsProcessor,
     clean_output,
     decode_image,
     parse_request,
+    request_ngram_processor,
     split_pages,
 )
 
@@ -208,3 +211,30 @@ class TestNoRepeatNGramLogitsProcessor:
         assert logits[1] == float("-inf")
         assert logits[2] == float("-inf")
         assert logits[0] == 0.0
+
+
+class TestRequestNgramProcessor:
+    """The V1 engine builds the processor per request from extra_args; this glue
+    deciding when and how is the part that runs without a GPU."""
+
+    def test_absent_extra_args_disables_the_processor(self):
+        assert request_ngram_processor(None) is None
+        assert request_ngram_processor({}) is None
+
+    def test_window_from_extra_args_is_applied(self):
+        processor = request_ngram_processor({EXTRA_ARG_NGRAM_WINDOW: 128})
+        assert isinstance(processor, NoRepeatNGramLogitsProcessor)
+        assert processor.window_size == 128
+        assert processor.ngram_size == NGRAM_SIZE
+
+    def test_window_arriving_as_string_is_coerced(self):
+        # extra_args may round-trip through JSON serialization layers.
+        processor = request_ngram_processor({EXTRA_ARG_NGRAM_WINDOW: "1024"})
+        assert processor.window_size == 1024
+
+    def test_built_processor_actually_bans(self):
+        processor = request_ngram_processor({EXTRA_ARG_NGRAM_WINDOW: 64})
+        processor.ngram_size = 2  # shrink for a compact fixture
+        logits = [0.0] * 10
+        processor([5, 1, 5], logits)
+        assert logits[1] == float("-inf")
