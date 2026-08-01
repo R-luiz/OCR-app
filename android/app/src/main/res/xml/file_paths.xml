@@ -1,0 +1,5 @@
+<?xml version="1.0" encoding="utf-8"?>
+<paths>
+    <!-- Generated QR images staged for the share sheet; see QrImageStore.cacheForSharing. -->
+    <cache-path name="qrcodes" path="qrcodes/" />
+</paths>

@@ -38,6 +38,10 @@ DEFAULT_CONTAINER_DISK_GB = 60
 
 POLL_INTERVAL_SECONDS = 5
 
+# RunPod refuses endpoint creation below this, and the error only surfaces after a
+# template has already been made. Checking up front keeps dry-run honest.
+MIN_BALANCE_USD = 0.01
+
 
 class DeployError(RuntimeError):
     pass
@@ -62,11 +66,48 @@ def find_endpoint(runpod, name: str) -> dict | None:
     return None
 
 
+# Keys RunPod has used for the account's spendable balance.
+_BALANCE_KEYS = ("clientBalance", "currentBalance", "balance")
+
+
+def account_balance(runpod) -> float | None:
+    """Spendable balance, or None if the API does not report one."""
+    try:
+        user = runpod.get_user() or {}
+    except Exception:  # noqa: BLE001 - treated as "unknown", never fatal
+        return None
+    for key in _BALANCE_KEYS:
+        value = user.get(key)
+        if isinstance(value, (int, float)):
+            return float(value)
+    return None
+
+
+def check_balance(runpod) -> str | None:
+    """Returns an error message when the account cannot fund an endpoint."""
+    balance = account_balance(runpod)
+    if balance is None:
+        return None
+    if balance < MIN_BALANCE_USD:
+        return (
+            f"RunPod account balance is ${balance:.2f}. Creating an endpoint requires "
+            f"at least ${MIN_BALANCE_USD:.2f}.\n"
+            "Add credit at https://console.runpod.io/user/billing and re-run."
+        )
+    return None
+
+
 def summarize_account(runpod) -> None:
     endpoints = runpod.get_endpoints()
     print(f"account has {len(endpoints)} serverless endpoint(s)")
     for endpoint in endpoints:
         print(f"  - {endpoint.get('name')} ({endpoint.get('id')})")
+
+    balance = account_balance(runpod)
+    if balance is None:
+        print("account balance: not reported by the API")
+    else:
+        print(f"account balance: ${balance:.2f}")
 
     try:
         gpus = runpod.get_gpus()
@@ -191,6 +232,66 @@ def smoke_test(endpoint_id: str, api_key: str, image_path: str, timeout: int) ->
     return 0
 
 
+def health_check(endpoint_id: str, api_key: str) -> int:
+    """Reads worker counts without submitting a job — free, and fast enough to
+    diagnose a stuck deploy in seconds instead of waiting out another 30-minute
+    timeout. A job stuck at IN_QUEUE with 0 workers of any kind here means RunPod
+    could not schedule a worker at all (usually no GPU availability for the
+    requested type in your account/region), not merely a slow image pull."""
+    import urllib.error
+    import urllib.request
+
+    url = f"https://api.runpod.ai/v2/{endpoint_id}/health"
+    request = urllib.request.Request(
+        url, headers={"Authorization": f"Bearer {api_key}"}, method="GET",
+    )
+    try:
+        with urllib.request.urlopen(request, timeout=30) as response:
+            health = json.loads(response.read())
+    except urllib.error.HTTPError as exc:
+        print(f"FAIL: HTTP {exc.code}: {exc.read().decode(errors='replace')}", file=sys.stderr)
+        return 1
+    except urllib.error.URLError as exc:
+        print(f"FAIL: could not reach the endpoint: {exc.reason}", file=sys.stderr)
+        return 1
+
+    print(json.dumps(health, indent=2))
+
+    workers = health.get("workers", {})
+    jobs = health.get("jobs", {})
+    active = sum(workers.get(key, 0) for key in ("idle", "initializing", "ready", "running"))
+
+    diagnoses = []
+    if workers.get("unhealthy", 0) > 0:
+        diagnoses.append(
+            f"{workers['unhealthy']} worker(s) unhealthy — started but failing health "
+            "checks, often a container crash-loop. Check the endpoint's logs in the "
+            "RunPod console for the actual error.",
+        )
+    if workers.get("throttled", 0) > 0:
+        diagnoses.append(
+            f"{workers['throttled']} worker(s) throttled — a RunPod capacity/concurrency "
+            "limit, not something in this repo.",
+        )
+    if active == 0 and not diagnoses:
+        diagnoses.append(
+            "Zero workers in every state. RunPod is not scheduling a worker at all for "
+            "this GPU selection — check GPU availability for your account/region in the "
+            "console, or try different --gpu-ids.",
+        )
+
+    if jobs.get("inQueue", 0) > 0 and active == 0:
+        print(
+            f"\n{jobs['inQueue']} job(s) queued with no active worker — this is the "
+            "stuck state, not a slow cold start.",
+            file=sys.stderr,
+        )
+    for diagnosis in diagnoses:
+        print(f"  - {diagnosis}", file=sys.stderr)
+
+    return 0
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--image", default=DEFAULT_IMAGE)
@@ -207,6 +308,11 @@ def main() -> int:
     )
     parser.add_argument("--smoke-test", metavar="IMAGE", help="after deploying, OCR this page")
     parser.add_argument("--smoke-test-timeout", type=int, default=1800)
+    parser.add_argument(
+        "--health-check",
+        metavar="ENDPOINT_ID",
+        help="read worker/queue counts for an existing endpoint and exit; creates nothing",
+    )
     args = parser.parse_args()
 
     try:
@@ -214,6 +320,9 @@ def main() -> int:
     except DeployError as exc:
         print(f"error: {exc}", file=sys.stderr)
         return 2
+
+    if args.health_check:
+        return health_check(args.health_check, api_key)
 
     import runpod
 
@@ -241,6 +350,13 @@ def main() -> int:
         if not args.dry_run:
             print("\nRe-run with --confirm to apply. This provisions billable GPU capacity.")
         return 0
+
+    # Fail before creating a template: RunPod's own balance error arrives only after
+    # the template exists, leaving an orphan behind on every attempt.
+    balance_error = check_balance(runpod)
+    if balance_error:
+        print(f"error: {balance_error}", file=sys.stderr)
+        return 1
 
     if not args.network_volume_id:
         print(

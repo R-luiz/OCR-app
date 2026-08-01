@@ -135,6 +135,10 @@ dependencies {
     implementation(libs.androidx.camera.view)
 
     implementation(libs.mlkit.text.recognition)
+    implementation(libs.mlkit.barcode.scanning)
+    // Pure-Java QR encoder — no Android dependency, so the maker works without
+    // any network or Play Services model download.
+    implementation(libs.zxing.core)
 
     implementation(libs.retrofit)
     implementation(libs.retrofit.serialization.converter)

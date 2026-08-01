@@ -8,6 +8,8 @@ import androidx.navigation.compose.rememberNavController
 import androidx.navigation.navArgument
 import com.ocrapp.ui.capture.CaptureScreen
 import com.ocrapp.ui.home.HomeScreen
+import com.ocrapp.ui.qrgenerate.QrGenerateScreen
+import com.ocrapp.ui.qrscan.QrScanScreen
 import com.ocrapp.ui.result.ResultScreen
 import com.ocrapp.ui.settings.SettingsScreen
 
@@ -16,6 +18,8 @@ object Routes {
     const val CAPTURE = "capture"
     const val SETTINGS = "settings"
     const val RESULT = "result/{scanId}"
+    const val QR_SCAN = "qr_scan"
+    const val QR_GENERATE = "qr_generate"
 
     fun result(scanId: Long) = "result/$scanId"
 
@@ -31,8 +35,18 @@ fun OcrNavHost() {
             HomeScreen(
                 onNewScan = { navController.navigate(Routes.CAPTURE) },
                 onOpenScan = { scanId -> navController.navigate(Routes.result(scanId)) },
+                onScanQr = { navController.navigate(Routes.QR_SCAN) },
+                onCreateQr = { navController.navigate(Routes.QR_GENERATE) },
                 onOpenSettings = { navController.navigate(Routes.SETTINGS) },
             )
+        }
+
+        composable(Routes.QR_SCAN) {
+            QrScanScreen(onBack = { navController.popBackStack() })
+        }
+
+        composable(Routes.QR_GENERATE) {
+            QrGenerateScreen(onBack = { navController.popBackStack() })
         }
 
         composable(Routes.CAPTURE) {

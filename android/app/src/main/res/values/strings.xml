@@ -48,4 +48,25 @@
     <string name="error_backend_unreachable">Backend unreachable — used on-device Quick scan instead.</string>
     <string name="error_no_text">No text found in this image.</string>
     <string name="error_load_failed">Could not read that file.</string>
+
+    <string name="qr_scan_title">Scan QR code</string>
+    <string name="qr_scan_hint">Point the camera at a QR code</string>
+    <string name="qr_scan_permission_rationale">Camera access is needed to scan QR codes.</string>
+    <string name="qr_result_copy">Copy</string>
+    <string name="qr_result_share">Share</string>
+    <string name="qr_result_share_chooser">Share QR code content</string>
+    <string name="qr_result_open">Open link</string>
+    <string name="qr_result_scan_again">Scan again</string>
+    <string name="qr_result_copied">Copied to clipboard</string>
+    <string name="qr_result_open_failed">No app can open this link</string>
+
+    <string name="qr_generate_title">Create QR code</string>
+    <string name="qr_generate_input_label">Text or link</string>
+    <string name="qr_generate_empty">Enter some text to generate a QR code</string>
+    <string name="qr_generate_too_long">Text is too long to fit in a QR code</string>
+    <string name="qr_generate_save">Save</string>
+    <string name="qr_generate_share">Share</string>
+    <string name="qr_generate_share_chooser">Share QR code image</string>
+    <string name="qr_generate_saved">Saved to Pictures</string>
+    <string name="qr_generate_save_failed">Couldn\'t save the image</string>
 </resources>
