@@ -9,9 +9,9 @@ import com.ocrapp.data.ScanRepository
 import com.ocrapp.data.SettingsStore
 import com.ocrapp.ocr.EngineType
 import com.ocrapp.ocr.FallbackReason
+import com.ocrapp.ocr.LoadedPages
 import com.ocrapp.ocr.OcrRepository
 import com.ocrapp.ocr.OcrStage
-import com.ocrapp.ocr.PageImage
 import com.ocrapp.ocr.PageLoader
 import dagger.hilt.android.lifecycle.HiltViewModel
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -31,6 +31,11 @@ data class CaptureUiState(
     val isBackendConfigured: Boolean = false,
     @StringRes val messageRes: Int? = null,
     val savedScanId: Long? = null,
+    /** Pages rasterized so far, and how many there are, during [OcrStage.PREPARING]. */
+    val pagesDone: Int = 0,
+    val pagesTotal: Int = 0,
+    /** Pages the import dropped for exceeding the page ceiling; 0 in the normal case. */
+    val droppedPages: Int = 0,
 )
 
 @HiltViewModel
@@ -58,13 +63,21 @@ class CaptureViewModel @Inject constructor(
         _state.update { it.copy(messageRes = null) }
     }
 
+    fun onDroppedPagesShown() {
+        _state.update { it.copy(droppedPages = 0) }
+    }
+
     fun recognize(uris: List<Uri>) {
         if (uris.isEmpty()) return
-        startRecognition { pageLoader.load(uris) }
+        startRecognition { pageLoader.load(uris, ::onPagePrepared) }
     }
 
     fun recognizeCapture(file: File) {
         startRecognition { pageLoader.loadCapture(file) }
+    }
+
+    private fun onPagePrepared(done: Int, total: Int) {
+        _state.update { it.copy(pagesDone = done, pagesTotal = total) }
     }
 
     /** Clears the navigation signal once the Result screen has been opened. */
@@ -72,16 +85,24 @@ class CaptureViewModel @Inject constructor(
         _state.update { it.copy(savedScanId = null) }
     }
 
-    private fun startRecognition(loadPages: suspend () -> Result<List<PageImage>>) {
+    private fun startRecognition(loadPages: suspend () -> Result<LoadedPages>) {
         if (_state.value.isProcessing) return
 
         viewModelScope.launch {
-            _state.update { it.copy(isProcessing = true, stage = OcrStage.PREPARING) }
+            _state.update {
+                it.copy(
+                    isProcessing = true,
+                    stage = OcrStage.PREPARING,
+                    pagesDone = 0,
+                    pagesTotal = 0,
+                )
+            }
 
-            val pages = loadPages().getOrElse {
+            val loaded = loadPages().getOrElse {
                 finishWithMessage(R.string.error_load_failed)
                 return@launch
             }
+            val pages = loaded.pages
             if (pages.isEmpty()) {
                 finishWithMessage(R.string.error_load_failed)
                 return@launch
@@ -118,6 +139,7 @@ class CaptureViewModel @Inject constructor(
                     stage = null,
                     savedScanId = scanId,
                     messageRes = result.fallbackReason?.toMessageRes(),
+                    droppedPages = loaded.droppedPages,
                 )
             }
         }
