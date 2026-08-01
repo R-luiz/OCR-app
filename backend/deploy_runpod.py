@@ -292,6 +292,34 @@ def health_check(endpoint_id: str, api_key: str) -> int:
     return 0
 
 
+def purge_queue(endpoint_id: str, api_key: str) -> int:
+    """Clears jobs stuck in the endpoint's queue. Touches only the queue — no
+    endpoint config, template, or worker settings change, so this is safe to run
+    against a live billable endpoint. Useful when a worker is stuck unhealthy
+    against an old job: RunPod keeps retrying that job on the same occupied
+    worker slot, so a template update alone never gets a chance to take effect
+    until the queue is cleared and the endpoint can scale back to zero."""
+    import urllib.error
+    import urllib.request
+
+    url = f"https://api.runpod.ai/v2/{endpoint_id}/purge-queue"
+    request = urllib.request.Request(
+        url, headers={"Authorization": f"Bearer {api_key}"}, method="POST",
+    )
+    try:
+        with urllib.request.urlopen(request, timeout=30) as response:
+            result = json.loads(response.read())
+    except urllib.error.HTTPError as exc:
+        print(f"FAIL: HTTP {exc.code}: {exc.read().decode(errors='replace')}", file=sys.stderr)
+        return 1
+    except urllib.error.URLError as exc:
+        print(f"FAIL: could not reach the endpoint: {exc.reason}", file=sys.stderr)
+        return 1
+
+    print(json.dumps(result, indent=2))
+    return 0
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--image", default=DEFAULT_IMAGE)
@@ -313,6 +341,11 @@ def main() -> int:
         metavar="ENDPOINT_ID",
         help="read worker/queue counts for an existing endpoint and exit; creates nothing",
     )
+    parser.add_argument(
+        "--purge-queue",
+        metavar="ENDPOINT_ID",
+        help="clear stuck jobs from an existing endpoint's queue; touches only the queue",
+    )
     args = parser.parse_args()
 
     try:
@@ -323,6 +356,9 @@ def main() -> int:
 
     if args.health_check:
         return health_check(args.health_check, api_key)
+
+    if args.purge_queue:
+        return purge_queue(args.purge_queue, api_key)
 
     import runpod
 
