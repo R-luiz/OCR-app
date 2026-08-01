@@ -19,7 +19,11 @@ on:
         type: string
         required: false
       endpoint_id:
-        description: "Endpoint ID to read (health-check action only)"
+        description: "Endpoint ID to read (health-check/purge-queue actions only)"
+        type: string
+        required: false
+      image_tag:
+        description: "Image tag to deploy. Defaults to this ref's commit SHA — an immutable tag, unlike :latest"
         type: string
         required: false
 
@@ -36,6 +40,41 @@ jobs:
 
       - name: Install dependencies
         run: pip install runpod
+
+      # Deploying ":latest" is not safe here. It is mutable, so the tag can still point
+      # at the previous build while a rebuild is in flight, and a warm RunPod worker will
+      # happily keep serving the image it already pulled — a deploy that silently changes
+      # nothing. That exact pair of failures sent a "fixed" worker back with the identical
+      # error and the same workerId. An immutable per-commit tag makes each deploy a
+      # genuinely distinct image reference, so the worker has to pull it.
+      - name: Resolve the image reference
+        run: |
+          TAG="${{ inputs.image_tag }}"
+          if [ -z "$TAG" ]; then TAG="${{ github.sha }}"; fi
+          IMAGE="ghcr.io/$(echo "${{ github.repository }}" | tr '[:upper:]' '[:lower:]')/unlimited-ocr-worker:${TAG}"
+          echo "IMAGE=${IMAGE}" >> "$GITHUB_ENV"
+          echo "Deploying ${IMAGE}"
+
+      # A tag that does not exist yet yields a worker stuck pulling forever, so fail here
+      # instead: the usual cause is racing a still-running image build.
+      - name: Verify the image exists
+        run: |
+          TOKEN=$(curl -fsSL "https://ghcr.io/token?scope=repository:$(echo "${{ github.repository }}" | tr '[:upper:]' '[:lower:]')/unlimited-ocr-worker:pull" | python3 -c 'import json,sys; print(json.load(sys.stdin)["token"])')
+          REPO="$(echo "${{ github.repository }}" | tr '[:upper:]' '[:lower:]')/unlimited-ocr-worker"
+          TAG="${IMAGE##*:}"
+          CODE=$(curl -s -o /dev/null -w '%{http_code}' \
+            -H "Authorization: Bearer ${TOKEN}" \
+            -H "Accept: application/vnd.oci.image.index.v1+json,application/vnd.docker.distribution.manifest.v2+json,application/vnd.oci.image.manifest.v1+json" \
+            "https://ghcr.io/v2/${REPO}/manifests/${TAG}")
+          if [ "$CODE" != "200" ]; then
+            echo "::error::Image ${IMAGE} is not in the registry (HTTP ${CODE})." \
+                 "Either a backend-image build for this commit is still running (wait, then re-run)," \
+                 "or this commit never built an image — only changes to the Dockerfile," \
+                 "requirements.txt or handler.py do. In that case pass image_tag explicitly," \
+                 "using the SHA of the last commit that did."
+            exit 1
+          fi
+          echo "Image manifest found."
 
       - name: Check for the API key
         env:
@@ -54,14 +93,14 @@ jobs:
         env:
           RUNPOD_API_KEY: ${{ secrets.RUNPOD_API_KEY }}
           RUNPOD_NETWORK_VOLUME_ID: ${{ inputs.network_volume_id }}
-        run: python backend/deploy_runpod.py --dry-run
+        run: python backend/deploy_runpod.py --dry-run --image "$IMAGE"
 
       - name: Deploy
         if: inputs.action == 'deploy'
         env:
           RUNPOD_API_KEY: ${{ secrets.RUNPOD_API_KEY }}
           RUNPOD_NETWORK_VOLUME_ID: ${{ inputs.network_volume_id }}
-        run: python backend/deploy_runpod.py --confirm
+        run: python backend/deploy_runpod.py --confirm --image "$IMAGE"
 
       # Deploys, then submits a real page and waits for markdown. This is the
       # first time Unlimited-OCR actually runs — CI has no GPU of its own.
@@ -71,7 +110,7 @@ jobs:
           RUNPOD_API_KEY: ${{ secrets.RUNPOD_API_KEY }}
           RUNPOD_NETWORK_VOLUME_ID: ${{ inputs.network_volume_id }}
         run: |
-          python backend/deploy_runpod.py --confirm \
+          python backend/deploy_runpod.py --confirm --image "$IMAGE" \
             --smoke-test android/app/src/androidTest/assets/sample_page.png
 
       # Read-only: no job submitted, no GPU spent. The fast way to tell "worker
