@@ -47,14 +47,15 @@ page. Hence RunPod Serverless, which bills per second and scales to zero.
 ### Build and push
 
 `.github/workflows/backend-image.yml` builds and pushes the image on every push that
-touches `backend/`, tagging it:
+touches `backend/`. It is published and anonymously pullable, so a RunPod endpoint can be
+pointed straight at:
 
 ```
 ghcr.io/r-luiz/ocr-app/unlimited-ocr-worker:latest
 ```
 
-Check the **Backend image** workflow for a successful run before pointing a RunPod
-endpoint at that tag. To build it yourself instead:
+37 layers, ~8.8 GB compressed — expect a slow first cold start on a fresh worker. To build
+it yourself instead:
 
 ```bash
 cd backend
@@ -72,7 +73,8 @@ docker build --build-arg BASE_IMAGE=vllm/vllm-openai:unlimited-ocr-cu129 .
 
 ### Create the RunPod endpoint
 
-1. RunPod → Serverless → New Endpoint, pointing at your image.
+1. RunPod → Serverless → New Endpoint, pointing at
+   `ghcr.io/r-luiz/ocr-app/unlimited-ocr-worker:latest` (no registry credentials needed).
 2. **GPU:** 48 GB (L40S) recommended for 32K-context headroom. 24 GB is workable for
    single-page scans.
 3. **Attach a Network Volume.** `HF_HOME` is set to `/runpod-volume/huggingface-cache`, so
