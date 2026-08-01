@@ -9,9 +9,9 @@ import com.ocrapp.data.ScanRepository
 import com.ocrapp.data.SettingsStore
 import com.ocrapp.ocr.EngineType
 import com.ocrapp.ocr.FallbackReason
+import com.ocrapp.ocr.LoadedPages
 import com.ocrapp.ocr.OcrRepository
 import com.ocrapp.ocr.OcrStage
-import com.ocrapp.ocr.PageImage
 import com.ocrapp.ocr.PageLoader
 import dagger.hilt.android.lifecycle.HiltViewModel
 import kotlinx.coroutines.flow.MutableStateFlow
