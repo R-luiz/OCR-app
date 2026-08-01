@@ -38,6 +38,10 @@ DEFAULT_CONTAINER_DISK_GB = 60
 
 POLL_INTERVAL_SECONDS = 5
 
+# RunPod refuses endpoint creation below this, and the error only surfaces after a
+# template has already been made. Checking up front keeps dry-run honest.
+MIN_BALANCE_USD = 0.01
+
 
 class DeployError(RuntimeError):
     pass
@@ -62,11 +66,48 @@ def find_endpoint(runpod, name: str) -> dict | None:
     return None
 
 
+# Keys RunPod has used for the account's spendable balance.
+_BALANCE_KEYS = ("clientBalance", "currentBalance", "balance")
+
+
+def account_balance(runpod) -> float | None:
+    """Spendable balance, or None if the API does not report one."""
+    try:
+        user = runpod.get_user() or {}
+    except Exception:  # noqa: BLE001 - treated as "unknown", never fatal
+        return None
+    for key in _BALANCE_KEYS:
+        value = user.get(key)
+        if isinstance(value, (int, float)):
+            return float(value)
+    return None
+
+
+def check_balance(runpod) -> str | None:
+    """Returns an error message when the account cannot fund an endpoint."""
+    balance = account_balance(runpod)
+    if balance is None:
+        return None
+    if balance < MIN_BALANCE_USD:
+        return (
+            f"RunPod account balance is ${balance:.2f}. Creating an endpoint requires "
+            f"at least ${MIN_BALANCE_USD:.2f}.\n"
+            "Add credit at https://console.runpod.io/user/billing and re-run."
+        )
+    return None
+
+
 def summarize_account(runpod) -> None:
     endpoints = runpod.get_endpoints()
     print(f"account has {len(endpoints)} serverless endpoint(s)")
     for endpoint in endpoints:
         print(f"  - {endpoint.get('name')} ({endpoint.get('id')})")
+
+    balance = account_balance(runpod)
+    if balance is None:
+        print("account balance: not reported by the API")
+    else:
+        print(f"account balance: ${balance:.2f}")
 
     try:
         gpus = runpod.get_gpus()
@@ -241,6 +282,13 @@ def main() -> int:
         if not args.dry_run:
             print("\nRe-run with --confirm to apply. This provisions billable GPU capacity.")
         return 0
+
+    # Fail before creating a template: RunPod's own balance error arrives only after
+    # the template exists, leaving an orphan behind on every attempt.
+    balance_error = check_balance(runpod)
+    if balance_error:
+        print(f"error: {balance_error}", file=sys.stderr)
+        return 1
 
     if not args.network_volume_id:
         print(
