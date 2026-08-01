@@ -1,0 +1,4 @@
+# vLLM, torch and transformers already ship in the vllm/vllm-openai:unlimited-ocr base
+# image at the versions Baidu validated — do not pin them here or pip will fight it.
+runpod>=1.7.0
+pillow>=11.0.0

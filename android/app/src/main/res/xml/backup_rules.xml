@@ -1,0 +1,8 @@
+<?xml version="1.0" encoding="utf-8"?>
+<full-backup-content>
+    <!-- The RunPod API key lives in EncryptedSharedPreferences, whose master key
+         is not backed up; excluding the file avoids restoring undecryptable data. -->
+    <exclude
+        domain="sharedpref"
+        path="ocr_settings.xml" />
+</full-backup-content>

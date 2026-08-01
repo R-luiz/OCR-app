@@ -1,0 +1,51 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="app_name">OCR</string>
+
+    <string name="home_title">Scans</string>
+    <string name="home_search_hint">Search scans</string>
+    <string name="home_empty_title">No scans yet</string>
+    <string name="home_empty_body">Capture a page or import a PDF to get started.</string>
+    <string name="home_new_scan">New scan</string>
+
+    <string name="capture_title">Capture</string>
+    <string name="capture_shutter">Capture</string>
+    <string name="capture_import_images">Import images</string>
+    <string name="capture_import_pdf">Import PDF</string>
+    <string name="capture_permission_rationale">Camera access is needed to scan pages. You can still import images or a PDF instead.</string>
+    <string name="capture_grant_permission">Grant camera access</string>
+
+    <string name="mode_quick">Quick scan</string>
+    <string name="mode_document">Document parsing</string>
+    <string name="mode_quick_hint">On-device, instant, works offline</string>
+    <string name="mode_document_hint">Unlimited-OCR, layout-aware Markdown</string>
+
+    <string name="result_title">Result</string>
+    <string name="result_copy">Copy</string>
+    <string name="result_share">Share</string>
+    <string name="result_save">Save</string>
+    <string name="result_delete">Delete</string>
+    <string name="result_rendered">Rendered</string>
+    <string name="result_raw">Raw</string>
+    <string name="result_copied">Copied to clipboard</string>
+    <string name="result_share_chooser">Share text</string>
+
+    <string name="settings_title">Settings</string>
+    <string name="settings_runpod_header">Unlimited-OCR backend</string>
+    <string name="settings_endpoint_id">RunPod endpoint ID</string>
+    <string name="settings_api_key">RunPod API key</string>
+    <string name="settings_test">Test connection</string>
+    <string name="settings_saved">Settings saved</string>
+    <string name="settings_hint">Document parsing sends pages to your own RunPod Serverless endpoint. Leave blank to use on-device Quick scan only.</string>
+
+    <string name="progress_preparing">Preparing pages…</string>
+    <string name="progress_uploading">Uploading…</string>
+    <string name="progress_queued">Waiting for a GPU worker…</string>
+    <string name="progress_running">Parsing document…</string>
+    <string name="progress_recognizing">Recognizing text…</string>
+
+    <string name="error_no_backend">No backend configured — used on-device Quick scan instead.</string>
+    <string name="error_backend_unreachable">Backend unreachable — used on-device Quick scan instead.</string>
+    <string name="error_no_text">No text found in this image.</string>
+    <string name="error_load_failed">Could not read that file.</string>
+</resources>
