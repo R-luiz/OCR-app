@@ -170,13 +170,21 @@ Both halves build and test green in CI (`.github/workflows/android.yml`,
   `RemoteOcrEngine` submit-and-poll state machine against a MockWebServer, `ImageNormalizer`
   downscaling, the `ScanDao` round-trip, and the Markdown parser/converter. The Compose,
   Hilt (KSP), Room and ML Kit layers all compile.
+- **Android: 5 instrumented tests pass on an API 30 emulator.** These are the only ones
+  that execute ML Kit's recognizer and the platform `PdfRenderer`, neither of which runs
+  under Robolectric. They assert on real recognized strings — the invoice number and total
+  come back off a generated page — and OCR the rendered pages of a two-page PDF, which is
+  what guards the white-composite fill in `PageLoader` (a transparent render flattens to
+  black under JPEG and silently yields nothing).
 - **Backend: 33 handler tests pass** (input parsing, base64/data-URL decoding, special-token
   cleanup, page splitting, the no-repeat-ngram logits processor).
 
 Download the APK from the **Android** workflow run's `ocr-app-debug` artifact.
 
-What CI does **not** prove: the worker has never run inference. A green image build means
-the container assembles, not that Unlimited-OCR produces correct output — GitHub runners
-have no GPU. The first real proof is `test_local.py` against a live endpoint. Nothing has
-been exercised on a physical Android device either, so camera capture, the photo picker,
-and PDF import are untested against real hardware.
+What CI still does **not** prove:
+
+- **Unlimited-OCR has never run.** GitHub runners have no GPU, so a green image build means
+  the container assembles, not that the model produces correct output. `test_local.py`
+  against a live endpoint is the first real check of the Document parsing path.
+- **Nothing has run on physical hardware.** The emulator covers ML Kit and PDF import, but
+  camera capture through CameraX is still unexercised.
