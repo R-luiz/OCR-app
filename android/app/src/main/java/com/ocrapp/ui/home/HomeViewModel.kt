@@ -6,6 +6,7 @@ import com.ocrapp.data.ScanEntity
 import com.ocrapp.data.ScanRepository
 import dagger.hilt.android.lifecycle.HiltViewModel
 import kotlinx.coroutines.ExperimentalCoroutinesApi
+import kotlinx.coroutines.FlowPreview
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.StateFlow
@@ -24,7 +25,7 @@ class HomeViewModel @Inject constructor(
     private val _query = MutableStateFlow("")
     val query: StateFlow<String> = _query.asStateFlow()
 
-    @OptIn(ExperimentalCoroutinesApi::class)
+    @OptIn(ExperimentalCoroutinesApi::class, FlowPreview::class)
     val scans: StateFlow<List<ScanEntity>> = _query
         .debounce { if (it.isBlank()) 0L else SEARCH_DEBOUNCE_MS }
         .flatMapLatest { repository.observe(it) }
