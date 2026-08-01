@@ -5,15 +5,20 @@ on:
   workflow_dispatch:
     inputs:
       action:
-        description: "dry-run inspects the account and creates nothing"
+        description: "dry-run inspects the account and creates nothing; health-check reads an existing endpoint's worker/queue counts and also creates nothing"
         type: choice
         options:
           - dry-run
           - deploy
           - deploy-and-smoke-test
+          - health-check
         default: dry-run
       network_volume_id:
         description: "Network volume ID (strongly recommended — without one, every cold start re-downloads ~6.7 GB of weights)"
+        type: string
+        required: false
+      endpoint_id:
+        description: "Endpoint ID to read (health-check action only)"
         type: string
         required: false
 
@@ -67,3 +72,11 @@ jobs:
         run: |
           python backend/deploy_runpod.py --confirm \
             --smoke-test android/app/src/androidTest/assets/sample_page.png
+
+      # Read-only: no job submitted, no GPU spent. The fast way to tell "worker
+      # is still cold-starting" apart from "no worker is being scheduled at all".
+      - name: Health check
+        if: inputs.action == 'health-check'
+        env:
+          RUNPOD_API_KEY: ${{ secrets.RUNPOD_API_KEY }}
+        run: python backend/deploy_runpod.py --health-check "${{ inputs.endpoint_id }}"

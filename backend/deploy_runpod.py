@@ -232,6 +232,66 @@ def smoke_test(endpoint_id: str, api_key: str, image_path: str, timeout: int) ->
     return 0
 
 
+def health_check(endpoint_id: str, api_key: str) -> int:
+    """Reads worker counts without submitting a job — free, and fast enough to
+    diagnose a stuck deploy in seconds instead of waiting out another 30-minute
+    timeout. A job stuck at IN_QUEUE with 0 workers of any kind here means RunPod
+    could not schedule a worker at all (usually no GPU availability for the
+    requested type in your account/region), not merely a slow image pull."""
+    import urllib.error
+    import urllib.request
+
+    url = f"https://api.runpod.ai/v2/{endpoint_id}/health"
+    request = urllib.request.Request(
+        url, headers={"Authorization": f"Bearer {api_key}"}, method="GET",
+    )
+    try:
+        with urllib.request.urlopen(request, timeout=30) as response:
+            health = json.loads(response.read())
+    except urllib.error.HTTPError as exc:
+        print(f"FAIL: HTTP {exc.code}: {exc.read().decode(errors='replace')}", file=sys.stderr)
+        return 1
+    except urllib.error.URLError as exc:
+        print(f"FAIL: could not reach the endpoint: {exc.reason}", file=sys.stderr)
+        return 1
+
+    print(json.dumps(health, indent=2))
+
+    workers = health.get("workers", {})
+    jobs = health.get("jobs", {})
+    active = sum(workers.get(key, 0) for key in ("idle", "initializing", "ready", "running"))
+
+    diagnoses = []
+    if workers.get("unhealthy", 0) > 0:
+        diagnoses.append(
+            f"{workers['unhealthy']} worker(s) unhealthy — started but failing health "
+            "checks, often a container crash-loop. Check the endpoint's logs in the "
+            "RunPod console for the actual error.",
+        )
+    if workers.get("throttled", 0) > 0:
+        diagnoses.append(
+            f"{workers['throttled']} worker(s) throttled — a RunPod capacity/concurrency "
+            "limit, not something in this repo.",
+        )
+    if active == 0 and not diagnoses:
+        diagnoses.append(
+            "Zero workers in every state. RunPod is not scheduling a worker at all for "
+            "this GPU selection — check GPU availability for your account/region in the "
+            "console, or try different --gpu-ids.",
+        )
+
+    if jobs.get("inQueue", 0) > 0 and active == 0:
+        print(
+            f"\n{jobs['inQueue']} job(s) queued with no active worker — this is the "
+            "stuck state, not a slow cold start.",
+            file=sys.stderr,
+        )
+    for diagnosis in diagnoses:
+        print(f"  - {diagnosis}", file=sys.stderr)
+
+    return 0
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--image", default=DEFAULT_IMAGE)
@@ -248,6 +308,11 @@ def main() -> int:
     )
     parser.add_argument("--smoke-test", metavar="IMAGE", help="after deploying, OCR this page")
     parser.add_argument("--smoke-test-timeout", type=int, default=1800)
+    parser.add_argument(
+        "--health-check",
+        metavar="ENDPOINT_ID",
+        help="read worker/queue counts for an existing endpoint and exit; creates nothing",
+    )
     args = parser.parse_args()
 
     try:
@@ -255,6 +320,9 @@ def main() -> int:
     except DeployError as exc:
         print(f"error: {exc}", file=sys.stderr)
         return 2
+
+    if args.health_check:
+        return health_check(args.health_check, api_key)
 
     import runpod
 
