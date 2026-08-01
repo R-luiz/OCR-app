@@ -35,12 +35,12 @@
         </activity>
 
         <!--
-          Bundles the Latin text-recognition model into the APK (~4 MB) so the
-          on-device Quick Scan path works on first launch with no network.
+          The com.google.mlkit:text-recognition artifact bundles the Latin model into
+          the APK (~4 MB), so Quick scan works on first launch with no network and no
+          Play Services. No DEPENDENCIES meta-data is declared here on purpose — that
+          tag drives model download for the unbundled play-services-mlkit-* variant,
+          which this app does not use.
         -->
-        <meta-data
-            android:name="com.google.mlkit.vision.DEPENDENCIES"
-            android:value="ocr" />
     </application>
 
 </manifest>
