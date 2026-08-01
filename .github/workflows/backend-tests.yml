@@ -1,0 +1,41 @@
+# Fast checks for everything under backend/, including the scripts that never
+# enter the Docker image. The expensive image rebuild lives in backend-image.yml
+# and is scoped to the files the Dockerfile actually copies.
+name: Backend tests
+
+on:
+  push:
+    branches: ["**"]
+    paths:
+      - "backend/**"
+      - ".github/workflows/backend-tests.yml"
+  pull_request:
+    paths:
+      - "backend/**"
+      - ".github/workflows/backend-tests.yml"
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install dependencies
+        run: pip install pillow pytest runpod
+
+      - name: Unit tests
+        run: python -m pytest test_handler.py -q
+        working-directory: backend
+
+      # Catches syntax errors and bad imports in the scripts that have no test
+      # coverage of their own.
+      - name: Import check the scripts
+        run: |
+          python -m py_compile backend/deploy_runpod.py backend/test_local.py
+          python backend/deploy_runpod.py --help > /dev/null
+          echo "scripts import and parse arguments cleanly"

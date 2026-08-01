@@ -3,8 +3,13 @@ name: Backend image
 on:
   push:
     branches: ["**"]
+    # Only the files that actually end up in the image. Rebuilding is a ~25 minute,
+    # ~8.8 GB job, so it must not fire for changes to the deploy or test scripts,
+    # which the Dockerfile never copies.
     paths:
-      - "backend/**"
+      - "backend/Dockerfile"
+      - "backend/requirements.txt"
+      - "backend/handler.py"
       - ".github/workflows/backend-image.yml"
   workflow_dispatch:
 
