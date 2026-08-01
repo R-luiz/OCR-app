@@ -33,7 +33,7 @@ class MlKitOcrEngine @Inject constructor() : OcrEngine {
         if (pages.isEmpty()) {
             return@withContext Result.failure(IllegalArgumentException("No pages to recognize"))
         }
-        onStage(OcrStage.RUNNING)
+        onStage(OcrStage.RECOGNIZING)
         runCatching {
             val perPage = pages.sortedBy { it.index }.map { page ->
                 recognizePage(page)

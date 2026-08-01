@@ -55,6 +55,22 @@ class OcrPipelineInstrumentedTest {
     }
 
     @Test
+    fun mlKitReportsOnDeviceRecognitionNotRemoteParsing() = runBlocking {
+        val bitmap = testAssets.open(SAMPLE_PAGE).use { BitmapFactory.decodeStream(it) }
+        val stages = mutableListOf<OcrStage>()
+
+        MlKitOcrEngine()
+            .recognize(listOf(PageImage(0, bitmap)), onStage = { stages += it })
+            .getOrThrow()
+
+        // The progress overlay is how a user tells the engines apart, so the on-device
+        // path must not claim the remote path's stages.
+        assertEquals(listOf(OcrStage.RECOGNIZING), stages)
+        assertTrue("must not report remote stages", OcrStage.QUEUED !in stages)
+        assertTrue("must not report remote stages", OcrStage.RUNNING !in stages)
+    }
+
+    @Test
     fun mlKitConcatenatesMultiplePages() = runBlocking {
         val pages = List(2) { index ->
             val bitmap = testAssets.open(SAMPLE_PAGE).use { BitmapFactory.decodeStream(it) }

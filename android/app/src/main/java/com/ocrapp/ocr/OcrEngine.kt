@@ -30,9 +30,16 @@ data class OcrOutput(
     val pageCount: Int,
 )
 
-/** Coarse progress states, surfaced so the user knows why a slow run is slow. */
+/**
+ * Coarse progress states, surfaced so the user knows why a slow run is slow.
+ *
+ * [RECOGNIZING] is on-device work and [QUEUED]/[RUNNING] are remote, so the stage
+ * also tells the user which engine is actually handling the scan — including when a
+ * Document-parsing request has quietly fallen back to on-device recognition.
+ */
 enum class OcrStage {
     PREPARING,
+    RECOGNIZING,
     UPLOADING,
     QUEUED,
     RUNNING,

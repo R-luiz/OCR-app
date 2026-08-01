@@ -345,6 +345,7 @@ private fun ProcessingOverlay(stage: OcrStage?) {
                     text = stringResource(
                         when (stage) {
                             OcrStage.PREPARING, null -> R.string.progress_preparing
+                            OcrStage.RECOGNIZING -> R.string.progress_recognizing
                             OcrStage.UPLOADING -> R.string.progress_uploading
                             OcrStage.QUEUED -> R.string.progress_queued
                             OcrStage.RUNNING -> R.string.progress_running
