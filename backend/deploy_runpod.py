@@ -296,6 +296,104 @@ def health_check(endpoint_id: str, api_key: str) -> int:
     return 0
 
 
+def _find_endpoint_by_id(runpod, endpoint_id: str) -> dict:
+    for endpoint in runpod.get_endpoints():
+        if endpoint.get("id") == endpoint_id:
+            return endpoint
+    raise DeployError(f"endpoint {endpoint_id} not found on this account")
+
+
+def _save_endpoint(endpoint: dict, workers_max: int) -> dict:
+    """Re-saves an endpoint with a new workersMax, leaving everything else as-is.
+
+    saveEndpoint replaces the whole input object rather than patching it, so every
+    field is re-sent from the values the API just returned for this endpoint — the
+    same field set runpod's own create_endpoint sends, plus ``id`` to target the
+    existing record. Anything omitted here would be cleared, hence the round trip.
+    """
+    from runpod.api.graphql import run_graphql_query
+
+    fields = [
+        f'id: "{endpoint["id"]}"',
+        f'name: "{endpoint["name"]}"',
+        f'templateId: "{endpoint["templateId"]}"',
+        f'gpuIds: "{endpoint["gpuIds"]}"',
+        f'networkVolumeId: "{endpoint.get("networkVolumeId") or ""}"',
+        f'locations: "{endpoint.get("locations") or ""}"',
+        f"idleTimeout: {int(endpoint['idleTimeout'])}",
+        f'scalerType: "{endpoint["scalerType"]}"',
+        f"scalerValue: {int(endpoint['scalerValue'])}",
+        f"workersMin: {int(endpoint['workersMin'])}",
+        f"workersMax: {int(workers_max)}",
+    ]
+    if endpoint.get("gpuCount") is not None:
+        fields.append(f"gpuCount: {int(endpoint['gpuCount'])}")
+
+    mutation = (
+        "mutation { saveEndpoint(input: { "
+        + ", ".join(fields)
+        + " }) { id name templateId workersMin workersMax } }"
+    )
+    return run_graphql_query(mutation)["data"]["saveEndpoint"]
+
+
+def _worker_counts(endpoint_id: str, api_key: str) -> dict:
+    import urllib.request
+
+    request = urllib.request.Request(
+        f"https://api.runpod.ai/v2/{endpoint_id}/health",
+        headers={"Authorization": f"Bearer {api_key}"},
+        method="GET",
+    )
+    with urllib.request.urlopen(request, timeout=30) as response:
+        return json.loads(response.read()).get("workers", {})
+
+
+def recycle_workers(runpod, endpoint_id: str, api_key: str, timeout: int = 300) -> int:
+    """Drains the endpoint's workers so the next request starts a fresh container.
+
+    Repointing an endpoint at a new template does not restart the workers already
+    running on the old one: a warm worker keeps serving its existing container, so a
+    deploy can look successful while every request still runs the previous image.
+    That is exactly what happened here — three deploys in a row answered from the
+    same workerId, one of them 419 ms after submission, still raising the error the
+    new image fixes. Scaling to zero terminates them; restoring the limit lets the
+    next request provision one from the current template.
+    """
+    endpoint = _find_endpoint_by_id(runpod, endpoint_id)
+    original_max = int(endpoint["workersMax"])
+    print(f"endpoint {endpoint_id}: workersMax {original_max} -> 0 (draining)")
+
+    _save_endpoint(endpoint, workers_max=0)
+
+    deadline = time.monotonic() + timeout
+    drained = False
+    while time.monotonic() < deadline:
+        counts = _worker_counts(endpoint_id, api_key)
+        total = sum(int(v) for v in counts.values())
+        print(f"  workers: {counts} (total {total})")
+        if total == 0:
+            drained = True
+            break
+        time.sleep(POLL_INTERVAL_SECONDS)
+
+    # Restore the limit even if draining timed out: leaving workersMax at 0 would
+    # silently disable the endpoint entirely.
+    print(f"restoring workersMax to {original_max}")
+    _save_endpoint(_find_endpoint_by_id(runpod, endpoint_id), workers_max=original_max)
+
+    if not drained:
+        print(
+            f"FAIL: workers did not reach zero within {timeout}s; the endpoint is "
+            "restored but may still hold a stale worker.",
+            file=sys.stderr,
+        )
+        return 1
+
+    print("OK — workers drained; the next request will start a fresh container.")
+    return 0
+
+
 def purge_queue(endpoint_id: str, api_key: str) -> int:
     """Clears jobs stuck in the endpoint's queue. Touches only the queue — no
     endpoint config, template, or worker settings change, so this is safe to run
@@ -350,6 +448,11 @@ def main() -> int:
         metavar="ENDPOINT_ID",
         help="clear stuck jobs from an existing endpoint's queue; touches only the queue",
     )
+    parser.add_argument(
+        "--recycle-workers",
+        metavar="ENDPOINT_ID",
+        help="drain the endpoint's workers so the next request starts a fresh container",
+    )
     args = parser.parse_args()
 
     try:
@@ -363,6 +466,16 @@ def main() -> int:
 
     if args.purge_queue:
         return purge_queue(args.purge_queue, api_key)
+
+    if args.recycle_workers:
+        import runpod
+
+        runpod.api_key = api_key
+        try:
+            return recycle_workers(runpod, args.recycle_workers, api_key)
+        except DeployError as exc:
+            print(f"error: {exc}", file=sys.stderr)
+            return 1
 
     import runpod
 
