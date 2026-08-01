@@ -89,7 +89,7 @@ class OcrPipelineInstrumentedTest {
         val pdf = copyAssetToCache(SAMPLE_PDF)
         val loader = PageLoader(appContext)
 
-        val pages = loader.load(listOf(Uri.fromFile(pdf))).getOrThrow()
+        val pages = loader.load(listOf(Uri.fromFile(pdf))).getOrThrow().pages
 
         assertEquals("expected both PDF pages", 2, pages.size)
         assertEquals(listOf(0, 1), pages.map { it.index })
@@ -105,7 +105,7 @@ class OcrPipelineInstrumentedTest {
     @Test
     fun pdfPagesAreCompositedOntoWhiteSoOcrCanReadThem() = runBlocking {
         val pdf = copyAssetToCache(SAMPLE_PDF)
-        val pages = PageLoader(appContext).load(listOf(Uri.fromFile(pdf))).getOrThrow()
+        val pages = PageLoader(appContext).load(listOf(Uri.fromFile(pdf))).getOrThrow().pages
 
         // PdfRenderer draws onto a transparent bitmap; without the explicit white fill
         // the JPEG encoder flattens it to black and OCR sees nothing at all.
@@ -131,6 +131,34 @@ class OcrPipelineInstrumentedTest {
         assertTrue(
             "long edge ${maxOf(decoded!!.width, decoded.height)} exceeds the model's 1024px input",
             maxOf(decoded.width, decoded.height) <= 1024,
+        )
+    }
+
+    // A long PDF used to sit behind an unqualified spinner for minutes with no way to
+    // tell progress from a hang, so the loader now reports which page it is on.
+    @Test
+    fun pdfImportReportsPerPageProgress() = runBlocking {
+        val pdf = copyAssetToCache(SAMPLE_PDF)
+        val seen = mutableListOf<Pair<Int, Int>>()
+
+        val loaded = PageLoader(appContext)
+            .load(listOf(Uri.fromFile(pdf))) { done, total -> seen += done to total }
+            .getOrThrow()
+
+        assertEquals("nothing should be dropped for a 2-page PDF", 0, loaded.droppedPages)
+        assertTrue("expected progress callbacks, got none", seen.isNotEmpty())
+        assertTrue(
+            "every callback must report the real total, got $seen",
+            seen.all { (_, total) -> total == loaded.pages.size },
+        )
+        assertEquals(
+            "progress must end on the final page",
+            loaded.pages.size,
+            seen.last().first,
+        )
+        assertTrue(
+            "progress must not run backwards, got $seen",
+            seen.map { it.first }.zipWithNext().all { (a, b) -> b >= a },
         )
     }
 

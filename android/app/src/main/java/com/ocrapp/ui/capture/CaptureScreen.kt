@@ -56,6 +56,7 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.res.pluralStringResource
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.viewinterop.AndroidView
 import androidx.compose.ui.unit.dp
@@ -119,6 +120,22 @@ fun CaptureScreen(
         LaunchedEffect(messageRes, message) {
             snackbarHostState.showSnackbar(message)
             viewModel.onMessageShown()
+        }
+    }
+
+    // Truncation loses part of the user's document, so it is always said out loud
+    // rather than left to be inferred from a short result.
+    if (state.droppedPages > 0) {
+        val kept = state.pagesTotal
+        val message = pluralStringResource(
+            R.plurals.pages_dropped,
+            state.droppedPages,
+            state.droppedPages,
+            kept,
+        )
+        LaunchedEffect(state.droppedPages, message) {
+            snackbarHostState.showSnackbar(message)
+            viewModel.onDroppedPagesShown()
         }
     }
 
@@ -190,7 +207,11 @@ fun CaptureScreen(
             }
 
             if (state.isProcessing) {
-                ProcessingOverlay(stage = state.stage)
+                ProcessingOverlay(
+                    stage = state.stage,
+                    pagesDone = state.pagesDone,
+                    pagesTotal = state.pagesTotal,
+                )
             }
         }
     }
@@ -327,7 +348,7 @@ private fun CaptureControls(
 }
 
 @Composable
-private fun ProcessingOverlay(stage: OcrStage?) {
+private fun ProcessingOverlay(stage: OcrStage?, pagesDone: Int = 0, pagesTotal: Int = 0) {
     Box(
         modifier = Modifier
             .fillMaxSize()
@@ -341,16 +362,28 @@ private fun ProcessingOverlay(stage: OcrStage?) {
             ) {
                 CircularProgressIndicator()
                 Spacer(Modifier.height(16.dp))
+                // Rasterizing a long PDF takes real time, so name the page being worked
+                // on: an unqualified spinner for minutes reads as a hang.
+                val showPageCount =
+                    (stage == OcrStage.PREPARING || stage == null) && pagesTotal > 1
                 Text(
-                    text = stringResource(
-                        when (stage) {
-                            OcrStage.PREPARING, null -> R.string.progress_preparing
-                            OcrStage.RECOGNIZING -> R.string.progress_recognizing
-                            OcrStage.UPLOADING -> R.string.progress_uploading
-                            OcrStage.QUEUED -> R.string.progress_queued
-                            OcrStage.RUNNING -> R.string.progress_running
-                        },
-                    ),
+                    text = if (showPageCount) {
+                        stringResource(
+                            R.string.progress_preparing_page,
+                            pagesDone.coerceAtLeast(1),
+                            pagesTotal,
+                        )
+                    } else {
+                        stringResource(
+                            when (stage) {
+                                OcrStage.PREPARING, null -> R.string.progress_preparing
+                                OcrStage.RECOGNIZING -> R.string.progress_recognizing
+                                OcrStage.UPLOADING -> R.string.progress_uploading
+                                OcrStage.QUEUED -> R.string.progress_queued
+                                OcrStage.RUNNING -> R.string.progress_running
+                            },
+                        )
+                    },
                     style = MaterialTheme.typography.bodyMedium,
                 )
             }
