@@ -24,6 +24,10 @@ import os
 import sys
 import time
 
+# Fallback only. CI passes --image with an immutable per-commit tag instead: ":latest"
+# is mutable, so it can still resolve to the previous build while a rebuild is in
+# flight, and a warm worker that already pulled it will not fetch it again — a deploy
+# that appears to succeed while changing nothing at all.
 DEFAULT_IMAGE = "ghcr.io/r-luiz/ocr-app/unlimited-ocr-worker:latest"
 ENDPOINT_NAME = "ocr-app-unlimited-ocr"
 TEMPLATE_NAME = "ocr-app-unlimited-ocr-template"
