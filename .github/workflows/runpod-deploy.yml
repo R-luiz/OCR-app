@@ -5,13 +5,14 @@ on:
   workflow_dispatch:
     inputs:
       action:
-        description: "dry-run inspects the account and creates nothing; health-check reads an existing endpoint's worker/queue counts and also creates nothing"
+        description: "dry-run/health-check/purge-queue create or change nothing (purge-queue only clears stuck queued jobs)"
         type: choice
         options:
           - dry-run
           - deploy
           - deploy-and-smoke-test
           - health-check
+          - purge-queue
         default: dry-run
       network_volume_id:
         description: "Network volume ID (strongly recommended — without one, every cold start re-downloads ~6.7 GB of weights)"
@@ -80,3 +81,10 @@ jobs:
         env:
           RUNPOD_API_KEY: ${{ secrets.RUNPOD_API_KEY }}
         run: python backend/deploy_runpod.py --health-check "${{ inputs.endpoint_id }}"
+
+      # Clears stuck queued jobs only — no endpoint/template/worker config changes.
+      - name: Purge queue
+        if: inputs.action == 'purge-queue'
+        env:
+          RUNPOD_API_KEY: ${{ secrets.RUNPOD_API_KEY }}
+        run: python backend/deploy_runpod.py --purge-queue "${{ inputs.endpoint_id }}"
