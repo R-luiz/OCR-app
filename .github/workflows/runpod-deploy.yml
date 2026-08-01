@@ -48,7 +48,13 @@ jobs:
       # nothing. That exact pair of failures sent a "fixed" worker back with the identical
       # error and the same workerId. An immutable per-commit tag makes each deploy a
       # genuinely distinct image reference, so the worker has to pull it.
+      # Only the actions that actually deploy an image need one. health-check,
+      # purge-queue and recycle-workers operate on the existing endpoint, and gating
+      # them on an image would block exactly when they are most needed: this step
+      # failed a recycle-workers run because the current commit, being workflow-only,
+      # never built an image of its own.
       - name: Resolve the image reference
+        if: contains(fromJSON('["dry-run","deploy","deploy-and-smoke-test"]'), inputs.action)
         run: |
           TAG="${{ inputs.image_tag }}"
           if [ -z "$TAG" ]; then TAG="${{ github.sha }}"; fi
@@ -59,6 +65,7 @@ jobs:
       # A tag that does not exist yet yields a worker stuck pulling forever, so fail here
       # instead: the usual cause is racing a still-running image build.
       - name: Verify the image exists
+        if: contains(fromJSON('["dry-run","deploy","deploy-and-smoke-test"]'), inputs.action)
         run: |
           TOKEN=$(curl -fsSL "https://ghcr.io/token?scope=repository:$(echo "${{ github.repository }}" | tr '[:upper:]' '[:lower:]')/unlimited-ocr-worker:pull" | python3 -c 'import json,sys; print(json.load(sys.stdin)["token"])')
           REPO="$(echo "${{ github.repository }}" | tr '[:upper:]' '[:lower:]')/unlimited-ocr-worker"
