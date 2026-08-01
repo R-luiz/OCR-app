@@ -1,0 +1,69 @@
+# Provisions billable GPU capacity, so this is manual-only — never on push.
+name: Deploy RunPod endpoint
+
+on:
+  workflow_dispatch:
+    inputs:
+      action:
+        description: "dry-run inspects the account and creates nothing"
+        type: choice
+        options:
+          - dry-run
+          - deploy
+          - deploy-and-smoke-test
+        default: dry-run
+      network_volume_id:
+        description: "Network volume ID (strongly recommended — without one, every cold start re-downloads ~6.7 GB of weights)"
+        type: string
+        required: false
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install dependencies
+        run: pip install runpod
+
+      - name: Check for the API key
+        env:
+          RUNPOD_API_KEY: ${{ secrets.RUNPOD_API_KEY }}
+        run: |
+          if [ -z "$RUNPOD_API_KEY" ]; then
+            echo "::error::RUNPOD_API_KEY secret is not set. Add it under" \
+                 "Settings -> Secrets and variables -> Actions, then re-run." \
+                 "Create a key at https://console.runpod.io/user/settings."
+            exit 1
+          fi
+          echo "API key is present."
+
+      - name: Dry run
+        if: inputs.action == 'dry-run'
+        env:
+          RUNPOD_API_KEY: ${{ secrets.RUNPOD_API_KEY }}
+          RUNPOD_NETWORK_VOLUME_ID: ${{ inputs.network_volume_id }}
+        run: python backend/deploy_runpod.py --dry-run
+
+      - name: Deploy
+        if: inputs.action == 'deploy'
+        env:
+          RUNPOD_API_KEY: ${{ secrets.RUNPOD_API_KEY }}
+          RUNPOD_NETWORK_VOLUME_ID: ${{ inputs.network_volume_id }}
+        run: python backend/deploy_runpod.py --confirm
+
+      # Deploys, then submits a real page and waits for markdown. This is the
+      # first time Unlimited-OCR actually runs — CI has no GPU of its own.
+      - name: Deploy and smoke test
+        if: inputs.action == 'deploy-and-smoke-test'
+        env:
+          RUNPOD_API_KEY: ${{ secrets.RUNPOD_API_KEY }}
+          RUNPOD_NETWORK_VOLUME_ID: ${{ inputs.network_volume_id }}
+        run: |
+          python backend/deploy_runpod.py --confirm \
+            --smoke-test android/app/src/androidTest/assets/sample_page.png
