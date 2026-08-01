@@ -22,10 +22,12 @@ import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.FilterChip
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
+import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.SnackbarHost
 import androidx.compose.material3.SnackbarHostState
+import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.material3.TopAppBar
 import androidx.compose.runtime.Composable
@@ -44,6 +46,7 @@ import androidx.compose.ui.unit.dp
 import androidx.hilt.navigation.compose.hiltViewModel
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.ocrapp.R
+import com.ocrapp.ocr.EngineType
 import com.ocrapp.ui.markdown.MarkdownText
 import com.ocrapp.ui.theme.MonoTextStyle
 import kotlinx.coroutines.launch
@@ -125,6 +128,13 @@ fun ResultScreen(
                 )
 
                 else -> Column(modifier = Modifier.fillMaxSize()) {
+                    // Which engine ran is not cosmetic: a Document-parsing request
+                    // silently falls back to on-device recognition when the backend is
+                    // unreachable, and the only other hints are a transient snackbar at
+                    // scan time and the presence of the Markdown chips below. Reopen a
+                    // scan later and both are easy to miss, so state it outright.
+                    EngineBadge(engine = state.scan.engineType)
+
                     if (state.hasMarkdown) {
                         ViewModeChips(
                             showRendered = state.showRendered,
@@ -154,6 +164,31 @@ fun ResultScreen(
                     }
                 }
             }
+        }
+    }
+}
+
+@Composable
+private fun EngineBadge(engine: EngineType) {
+    val label = when (engine) {
+        EngineType.QUICK -> R.string.result_engine_quick
+        EngineType.DOCUMENT -> R.string.result_engine_document
+    }
+    Row(
+        modifier = Modifier
+            .fillMaxWidth()
+            .padding(start = 16.dp, end = 16.dp, top = 8.dp),
+    ) {
+        Surface(
+            shape = MaterialTheme.shapes.small,
+            color = MaterialTheme.colorScheme.secondaryContainer,
+        ) {
+            Text(
+                text = stringResource(label),
+                style = MaterialTheme.typography.labelSmall,
+                color = MaterialTheme.colorScheme.onSecondaryContainer,
+                modifier = Modifier.padding(horizontal = 8.dp, vertical = 4.dp),
+            )
         }
     }
 }
