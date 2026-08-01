@@ -40,15 +40,16 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      # The vLLM base image is very large (CUDA runtime + torch). A stock runner
-      # has ~14 GB free, which is not enough; this reclaims ~25 GB.
+      # The vLLM base image is very large (CUDA runtime + torch), and the build now
+      # also downloads ~6.7 GB of model weights into a layer. A stock runner has
+      # ~14 GB free, which is not enough; this reclaims disk space.
       - name: Free disk space
         run: |
           df -h /
           sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc \
                       /usr/local/share/boost "$AGENT_TOOLSDIRECTORY" \
                       /usr/local/share/powershell /usr/share/swift || true
-          sudo docker image prune --all --force || true
+          sudo docker system prune --all --force --volumes || true
           df -h /
 
       # Docker refuses mixed-case repository names, and github.repository keeps the
