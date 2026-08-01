@@ -42,6 +42,16 @@ MAX_MODEL_LEN = int(os.environ.get("MAX_MODEL_LEN", "32768"))
 GPU_MEMORY_UTILIZATION = float(os.environ.get("GPU_MEMORY_UTILIZATION", "0.85"))
 MAX_PAGES = int(os.environ.get("MAX_PAGES", "64"))
 
+# Bounds on a single page, applied before any large allocation. The app sends
+# 1024px JPEGs a few hundred KB in size, so these are generous for legitimate
+# traffic while refusing decompression bombs.
+MAX_IMAGE_BYTES = int(os.environ.get("MAX_IMAGE_BYTES", str(25 * 1024 * 1024)))
+MAX_IMAGE_PIXELS = int(os.environ.get("MAX_IMAGE_PIXELS", str(80_000_000)))
+
+# Pillow's own guard, as a second line of defence for any path that reaches
+# decoding without going through decode_image().
+Image.MAX_IMAGE_PIXELS = MAX_IMAGE_PIXELS
+
 PROMPT_SINGLE = "<image>document parsing."
 PROMPT_MULTI = "<image>Multi page parsing."
 
@@ -94,11 +104,29 @@ def decode_image(encoded: str) -> Image.Image:
     except (binascii.Error, ValueError) as exc:
         raise InvalidInput(f"could not base64-decode image: {exc}") from exc
 
+    if len(raw) > MAX_IMAGE_BYTES:
+        raise InvalidInput(
+            f"image is {len(raw)} bytes, limit is {MAX_IMAGE_BYTES}"
+        )
+
     try:
         image = Image.open(io.BytesIO(raw))
-        image.load()
     except Exception as exc:  # Pillow raises a wide variety here.
         raise InvalidInput(f"could not decode image bytes: {exc}") from exc
+
+    # Check dimensions from the header before load() allocates anything: a few KB
+    # of crafted PNG can otherwise declare a gigapixel canvas and exhaust the
+    # worker's memory, taking the GPU down with it.
+    width, height = image.size
+    if width * height > MAX_IMAGE_PIXELS:
+        raise InvalidInput(
+            f"image is {width}x{height} ({width * height} pixels), limit is {MAX_IMAGE_PIXELS}"
+        )
+
+    try:
+        image.load()
+    except Exception as exc:  # noqa: BLE001 - truncated or malformed payloads
+        raise InvalidInput(f"could not read image data: {exc}") from exc
 
     # The model expects 3-channel input; incoming PNGs may carry alpha or be grayscale.
     return image.convert("RGB")

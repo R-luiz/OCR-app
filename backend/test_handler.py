@@ -67,6 +67,28 @@ class TestDecodeImage:
         with pytest.raises(InvalidInput):
             decode_image("data:image/png;base64,")
 
+    def test_rejects_oversized_payloads(self, monkeypatch):
+        import handler
+
+        monkeypatch.setattr(handler, "MAX_IMAGE_BYTES", 128)
+        with pytest.raises(InvalidInput, match="limit is 128"):
+            handler.decode_image(_png_data_url(size=(200, 200)))
+
+    def test_rejects_a_decompression_bomb_before_allocating(self, monkeypatch):
+        import handler
+
+        # A 12000x12000 single-colour PNG compresses to well under a megabyte but
+        # would allocate ~430 MB on load. The dimension check must reject it from
+        # the header alone, without ever calling load().
+        bomb = _png_data_url(size=(12000, 12000))
+        monkeypatch.setattr(handler, "MAX_IMAGE_PIXELS", 10_000_000)
+
+        with pytest.raises(InvalidInput, match="pixels"):
+            handler.decode_image(bomb)
+
+    def test_allows_images_within_the_pixel_budget(self):
+        assert decode_image(_png_data_url(size=(1024, 1024))).size == (1024, 1024)
+
 
 class TestParseRequest:
     def test_single_image_defaults_to_gundam_config(self):

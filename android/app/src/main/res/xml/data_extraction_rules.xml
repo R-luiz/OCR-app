@@ -1,4 +1,11 @@
 <?xml version="1.0" encoding="utf-8"?>
+<!--
+  Cloud backup is switched off entirely via android:allowBackup="false", because
+  recognized text can contain invoices, IDs and other sensitive documents. These
+  rules cover device-to-device transfer, which allowBackup does not govern, and
+  keep the encrypted settings file out of both: its master key lives in the
+  hardware keystore and does not travel, so a restored copy would be undecryptable.
+-->
 <data-extraction-rules>
     <cloud-backup>
         <exclude

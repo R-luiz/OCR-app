@@ -87,6 +87,22 @@ ksp {
     arg("room.schemaLocation", "$projectDir/schemas")
 }
 
+// A release APK is meant to be handed to other people, and anything in BuildConfig
+// is recoverable from it with `strings`. Baking in a personal RunPod key would leak
+// a credential that can spend money, so refuse to build one. Debug builds may still
+// carry it for convenience; Settings is the intended path either way.
+val releaseWouldEmbedApiKey = localProperty("runpod.apiKey").isNotBlank()
+tasks.matching { it.name.startsWith("assembleRelease") || it.name.startsWith("bundleRelease") }
+    .configureEach {
+        doFirst {
+            check(!releaseWouldEmbedApiKey) {
+                "runpod.apiKey is set in local.properties and would be embedded in this " +
+                    "release artifact. Remove it and enter the key in the app's Settings " +
+                    "screen instead."
+            }
+        }
+    }
+
 dependencies {
     implementation(libs.androidx.core.ktx)
     implementation(libs.androidx.lifecycle.runtime.ktx)
