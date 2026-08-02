@@ -111,29 +111,29 @@ def _model_source_files() -> list[str]:
     vLLM releases (this build requires a model_config argument that earlier ones did
     not), and the whole point of this probe is to survive the version it is pointed
     at. A grep over the package has no API to break.
+
+    The search covers the whole vllm package rather than just model_executor/models.
+    The model file answered how images are *substituted* — one PromptReplacement per
+    image, targeting a token id — but not how the prompt *string* becomes those token
+    ids in the first place. That happens in transformers_utils/processors, which the
+    narrower search never reached, leaving the actual question open.
     """
-    import vllm.model_executor.models as models_pkg
+    import vllm
 
     if not architectures:
         raise RuntimeError("no architectures from config.json; nothing to search for")
 
-    root = os.path.dirname(models_pkg.__file__)
-    needle = architectures[0]
-    hits = []
-    for entry in sorted(os.listdir(root)):
-        if not entry.endswith(".py"):
-            continue
-        path = os.path.join(root, entry)
-        try:
-            with open(path, encoding="utf-8") as handle:
-                body = handle.read()
-        except OSError:
-            continue
-        # registry.py maps every architecture name to a module, so it matches too;
-        # it is worth printing, but the implementation file is the one that matters.
-        if needle in body and entry != "registry.py":
-            hits.append(path)
-    return hits
+    root = os.path.dirname(vllm.__file__)
+    # Match on file *name*: the architecture's own modules are named for the model,
+    # and so is the DeepSeek-OCR base it derives from. Matching on content instead
+    # pulls in every registry and test that merely mentions the name.
+    stems = {"unlimited_ocr", "deepseek_ocr"}
+    hits: list[str] = []
+    for dirpath, _dirnames, filenames in os.walk(root):
+        for name in sorted(filenames):
+            if name.endswith(".py") and name[:-3] in stems:
+                hits.append(os.path.join(dirpath, name))
+    return sorted(hits)
 
 
 def dump_registry_entry() -> None:
