@@ -6,6 +6,14 @@ import javax.inject.Singleton
 data class RecognitionResult(
     val output: OcrOutput,
     val fallbackReason: FallbackReason? = null,
+    /**
+     * What the backend actually said, when it said anything — the job's error text, an
+     * HTTP status, a timeout. Kept alongside [fallbackReason] because the reason alone
+     * cannot tell a user (or a maintainer) *why* a paid backend declined the work, and
+     * collapsing every failure into one generic sentence made the fallback impossible
+     * to diagnose from the device.
+     */
+    val fallbackDetail: String? = null,
 )
 
 /**
@@ -38,6 +46,6 @@ class OcrRepository @Inject constructor(
             return Result.failure(error ?: IllegalStateException("Recognition failed"))
         }
         return quickEngine.recognize(pages, onStage)
-            .map { RecognitionResult(it, error.reason) }
+            .map { RecognitionResult(it, error.reason, error.message) }
     }
 }

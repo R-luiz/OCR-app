@@ -159,8 +159,20 @@ def deploy(runpod, args) -> str:
     return endpoint["id"]
 
 
-def smoke_test(endpoint_id: str, api_key: str, image_path: str, timeout: int) -> int:
-    """Submit one real page and wait for markdown — the first proof inference works."""
+def smoke_test(
+    endpoint_id: str,
+    api_key: str,
+    image_path: str,
+    timeout: int,
+    pages: int = 1,
+) -> int:
+    """Submit real pages and wait for markdown — the proof that inference works.
+
+    ``pages`` above 1 repeats the image to exercise the multi-page path, which is a
+    genuinely different branch: a different prompt, image_size 1024, crop_mode off,
+    and a much larger request body. Testing only a single page left that path
+    unverified while the app used it for every PDF.
+    """
     import urllib.error
     import urllib.request
 
@@ -168,12 +180,16 @@ def smoke_test(endpoint_id: str, api_key: str, image_path: str, timeout: int) ->
     with open(image_path, "rb") as handle:
         encoded = base64.b64encode(handle.read()).decode()
 
+    data_url = f"data:{mime};base64,{encoded}"
+    mode = "single" if pages == 1 else "multi"
     payload = {
         "input": {
-            "mode": "single",
-            "images": [f"data:{mime};base64,{encoded}"],
+            "mode": mode,
+            "images": [data_url] * pages,
         },
     }
+    body_mb = len(json.dumps(payload)) / (1024 * 1024)
+    print(f"mode={mode}, pages={pages}, request body ~{body_mb:.1f} MB")
     base = f"https://api.runpod.ai/v2/{endpoint_id}"
     headers = {"Content-Type": "application/json", "Authorization": f"Bearer {api_key}"}
 
@@ -439,6 +455,12 @@ def main() -> int:
     parser.add_argument("--smoke-test", metavar="IMAGE", help="after deploying, OCR this page")
     parser.add_argument("--smoke-test-timeout", type=int, default=1800)
     parser.add_argument(
+        "--smoke-test-pages",
+        type=int,
+        default=1,
+        help="repeat the page this many times; >1 exercises the multi-page path",
+    )
+    parser.add_argument(
         "--health-check",
         metavar="ENDPOINT_ID",
         help="read worker/queue counts for an existing endpoint and exit; creates nothing",
@@ -522,7 +544,13 @@ def main() -> int:
     print("android/local.properties as runpod.endpointId / runpod.apiKey.")
 
     if args.smoke_test:
-        return smoke_test(endpoint_id, api_key, args.smoke_test, args.smoke_test_timeout)
+        return smoke_test(
+            endpoint_id,
+            api_key,
+            args.smoke_test,
+            args.smoke_test_timeout,
+            args.smoke_test_pages,
+        )
     return 0
 
 

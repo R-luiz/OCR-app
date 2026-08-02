@@ -30,6 +30,12 @@ data class CaptureUiState(
     val stage: OcrStage? = null,
     val isBackendConfigured: Boolean = false,
     @StringRes val messageRes: Int? = null,
+    /**
+     * The backend's own words when a Document-parsing run fell back. Shown after the
+     * generic sentence, because "backend unreachable" alone gives the user nothing to
+     * act on when the real cause was, say, a payload the endpoint rejected.
+     */
+    val fallbackDetail: String? = null,
     val savedScanId: Long? = null,
     /** Pages rasterized so far, and how many there are, during [OcrStage.PREPARING]. */
     val pagesDone: Int = 0,
@@ -60,7 +66,7 @@ class CaptureViewModel @Inject constructor(
     }
 
     fun onMessageShown() {
-        _state.update { it.copy(messageRes = null) }
+        _state.update { it.copy(messageRes = null, fallbackDetail = null) }
     }
 
     fun onDroppedPagesShown() {
@@ -139,6 +145,7 @@ class CaptureViewModel @Inject constructor(
                     stage = null,
                     savedScanId = scanId,
                     messageRes = result.fallbackReason?.toMessageRes(),
+                    fallbackDetail = result.fallbackDetail,
                     droppedPages = loaded.droppedPages,
                 )
             }
@@ -171,4 +178,5 @@ class CaptureViewModel @Inject constructor(
 private fun FallbackReason.toMessageRes(): Int = when (this) {
     FallbackReason.NOT_CONFIGURED -> R.string.error_no_backend
     FallbackReason.UNREACHABLE -> R.string.error_backend_unreachable
+    FallbackReason.BACKEND_ERROR -> R.string.error_backend_failed
 }

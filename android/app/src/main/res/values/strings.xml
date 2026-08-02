@@ -53,6 +53,7 @@
 
     <string name="error_no_backend">No backend configured — used on-device Quick scan instead.</string>
     <string name="error_backend_unreachable">Backend unreachable — used on-device Quick scan instead.</string>
+    <string name="error_backend_failed">Backend returned an error — used on-device Quick scan instead.</string>
     <string name="error_no_text">No text found in this image.</string>
     <string name="error_load_failed">Could not read that file.</string>
 
