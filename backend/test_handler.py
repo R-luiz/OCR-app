@@ -16,6 +16,8 @@ from handler import (
     EXTRA_ARG_NGRAM_WINDOW,
     IMAGE_TOKEN,
     build_multi_prompt,
+    EMPTY_PAGE_NOTE,
+    empty_page_indexes,
     assemble_pages,
     join_pages,
     InvalidInput,
@@ -110,7 +112,9 @@ class TestParseRequest:
         assert request.mode == "multi"
         assert (request.image_size, request.crop_mode) == (1024, False)
         assert request.prompt.endswith("Multi page parsing.")
-        assert request.ngram_window == 1024
+        # Each page is inferred alone now, so the single-page window is the one
+        # that applies; the multi window was sized for a whole-document generation.
+        assert request.ngram_window == 128
 
     def test_multi_mode_forces_flat_config_even_if_caller_asks_for_crops(self):
         request = parse_request(
@@ -300,11 +304,33 @@ class TestJoinPages:
     def test_joins_in_order(self):
         assert join_pages(assemble_pages(["a", "b"])) == "a\n\nb"
 
-    def test_blank_pages_do_not_leave_gaps_in_the_document(self):
-        assert join_pages(assemble_pages(["a", "  ", "c"])) == "a\n\nc"
+    def test_blank_page_is_stated_rather_than_hidden(self):
+        # Silently omitting it produced a short document that still read complete.
+        joined = join_pages(assemble_pages(["a", "  ", "c"]))
+        assert joined == "a\n\n" + EMPTY_PAGE_NOTE.format(number=2) + "\n\nc"
+        assert "page 2" in joined
 
     def test_single_page_is_unchanged(self):
         assert join_pages(assemble_pages(["only"])) == "only"
 
-    def test_all_blank_yields_empty(self):
-        assert join_pages(assemble_pages(["", "  "])) == ""
+    def test_all_blank_still_accounts_for_every_page(self):
+        joined = join_pages(assemble_pages(["", "  "]))
+        assert joined == (
+            EMPTY_PAGE_NOTE.format(number=1) + "\n\n" + EMPTY_PAGE_NOTE.format(number=2)
+        )
+
+
+class TestEmptyPageIndexes:
+    """The response names pages that produced nothing, so a caller is never handed a
+    short document with no indication that part of the input is missing."""
+
+    def test_reports_blank_pages_by_index(self):
+        assert empty_page_indexes(assemble_pages(["a", "  ", "c", ""])) == [1, 3]
+
+    def test_no_blanks_reports_nothing(self):
+        assert empty_page_indexes(assemble_pages(["a", "b"])) == []
+
+    def test_indexes_line_up_with_the_page_entries(self):
+        pages = assemble_pages(["a", "", "c"])
+        for index in empty_page_indexes(pages):
+            assert pages[index]["markdown"] == ""

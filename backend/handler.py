@@ -72,6 +72,11 @@ NGRAM_SIZE = 35
 NGRAM_WINDOW_SINGLE = 128
 NGRAM_WINDOW_MULTI = 1024
 
+# How many times a page that came back empty is re-run on its own before the result
+# is reported as missing. Two is enough for the batching flake seen in practice while
+# bounding the worst case at three passes over a single page.
+EMPTY_PAGE_RETRIES = 2
+
 _SPECIAL_TOKEN_RE = re.compile(r"<\|[^|>]*\|>")
 # Best-effort page delimiters for multi-page output. Verify against real output from
 # your deployment before relying on the per-page split; the full `markdown` field is
@@ -187,7 +192,10 @@ def parse_request(job_input: Any) -> OcrRequest:
         image_size=1024,
         crop_mode=False,
         prompt=build_multi_prompt(len(decoded)),
-        ngram_window=NGRAM_WINDOW_MULTI,
+        # Each page is inferred on its own now, so the repetition window that applies
+        # is the single-page one. NGRAM_WINDOW_MULTI was sized for one long
+        # whole-document generation that no longer happens.
+        ngram_window=NGRAM_WINDOW_SINGLE,
         warnings=warnings,
     )
 
@@ -214,10 +222,25 @@ def assemble_pages(raw_pages: list[str]) -> list[dict[str, Any]]:
     ]
 
 
+EMPTY_PAGE_NOTE = "*[page {number}: no text recognized]*"
+
+
+def empty_page_indexes(pages: list[dict[str, Any]]) -> list[int]:
+    """Indexes of pages that produced no text."""
+    return [page["index"] for page in pages if not page["markdown"].strip()]
+
+
 def join_pages(pages: list[dict[str, Any]]) -> str:
-    """The whole document as one markdown string, skipping pages that read blank."""
+    """The whole document as one markdown string, marking pages that produced nothing.
+
+    An earlier version silently omitted blank pages to avoid gaps. That made a lost
+    page invisible: four pages in, three pages of text out, and a result that still
+    read like a complete document. A page that produced nothing is a fact about the
+    document, so it is stated rather than hidden.
+    """
     return PAGE_SEPARATOR.join(
-        page["markdown"] for page in pages if page["markdown"].strip()
+        page["markdown"].strip() or EMPTY_PAGE_NOTE.format(number=page["index"] + 1)
+        for page in pages
     )
 
 
@@ -375,7 +398,8 @@ def run_inference(request: OcrRequest) -> list[str]:
         {"prompt": PROMPT_SINGLE, "multi_modal_data": {"image": [image]}}
         for image in request.images
     ]
-    outputs = get_engine().generate(prompts, sampling)
+    engine = get_engine()
+    outputs = engine.generate(prompts, sampling)
 
     # generate() returns one output per prompt, in the order submitted. Assert that
     # rather than assume it: a mismatch would silently drop or duplicate a page, and
@@ -384,7 +408,29 @@ def run_inference(request: OcrRequest) -> list[str]:
         raise RuntimeError(
             f"expected {len(prompts)} completions, got {len(outputs)}"
         )
-    return [out.outputs[0].text for out in outputs]
+
+    texts = [out.outputs[0].text for out in outputs]
+
+    # A batched run can return an empty completion for a page that parses perfectly
+    # well on its own — a 4-page batch of one identical page came back with three
+    # pages of text and one blank, and the batch's outputs vary between identical
+    # inputs despite temperature=0. Re-run just the blank ones, alone, where that
+    # variability does not apply. Retrying only the empty pages keeps the cost
+    # proportional to the problem instead of redoing the document.
+    for index, text in enumerate(texts):
+        attempts = 0
+        while not clean_output(text).strip() and attempts < EMPTY_PAGE_RETRIES:
+            attempts += 1
+            print(
+                f"[unlimited-ocr] page {index} came back empty; "
+                f"retrying it alone ({attempts}/{EMPTY_PAGE_RETRIES})",
+                flush=True,
+            )
+            retried = engine.generate([prompts[index]], sampling)
+            text = retried[0].outputs[0].text
+        texts[index] = text
+
+    return texts
 
 
 # --------------------------------------------------------------------------------------
@@ -405,14 +451,27 @@ def handler(job: dict[str, Any]) -> dict[str, Any]:
         return {"error": f"inference failed: {type(exc).__name__}: {exc}"}
 
     pages = assemble_pages(raw)
+    warnings = list(request.warnings)
+
+    # A page that still produced nothing after its retries is reported, not buried:
+    # the caller is otherwise handed a short document with no indication that part
+    # of the input is missing from it.
+    empty = empty_page_indexes(pages)
+    if empty:
+        warnings.append(
+            "no text recognized on page(s) "
+            + ", ".join(str(index + 1) for index in empty)
+        )
+
     result: dict[str, Any] = {
         "markdown": join_pages(pages),
         "pages": pages,
+        "empty_pages": empty,
         "model": MODEL_NAME,
         "elapsed_ms": int((time.monotonic() - started) * 1000),
     }
-    if request.warnings:
-        result["warnings"] = request.warnings
+    if warnings:
+        result["warnings"] = warnings
     return result
 
 

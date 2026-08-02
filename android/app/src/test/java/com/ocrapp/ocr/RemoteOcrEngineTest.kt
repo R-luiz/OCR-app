@@ -238,6 +238,58 @@ class RemoteOcrEngineTest {
         assertEquals(2, output.pageCount)
     }
 
+    // A short document reads as a complete one, so pages the backend produced nothing
+    // for have to reach the UI as data rather than be inferred from the text.
+    @Test
+    fun `reports pages the backend recognized nothing on`() = runTest {
+        server.enqueue(
+            jsonResponse(
+                """{"id":"j","status":"COMPLETED","output":{"markdown":"a\n\nc",
+                   "pages":[{"index":0,"markdown":"a"},{"index":1,"markdown":""},
+                             {"index":2,"markdown":"c"}],
+                   "empty_pages":[1]}}""",
+            ),
+        )
+
+        val output = engine.recognize(List(3) { testPage() }).getOrThrow()
+
+        // 1-based for display, and the page count reflects what was sent.
+        assertEquals(listOf(2), output.emptyPageNumbers)
+        assertEquals(3, output.pageCount)
+    }
+
+    @Test
+    fun `reports pages the backend omitted entirely`() = runTest {
+        // Three pages sent, only two described: page 3 is unaccounted for.
+        server.enqueue(
+            jsonResponse(
+                """{"id":"j","status":"COMPLETED","output":{"markdown":"a\n\nb",
+                   "pages":[{"index":0,"markdown":"a"},{"index":1,"markdown":"b"}]}}""",
+            ),
+        )
+
+        val output = engine.recognize(List(3) { testPage() }).getOrThrow()
+
+        assertEquals(listOf(3), output.emptyPageNumbers)
+        assertEquals(3, output.pageCount)
+    }
+
+    @Test
+    fun `a complete document reports nothing missing`() = runTest {
+        server.enqueue(
+            jsonResponse(
+                """{"id":"j","status":"COMPLETED","output":{"markdown":"a\n\nb",
+                   "pages":[{"index":0,"markdown":"a"},{"index":1,"markdown":"b"}],
+                   "empty_pages":[]}}""",
+            ),
+        )
+
+        val output = engine.recognize(List(2) { testPage() }).getOrThrow()
+
+        assertEquals(emptyList<Int>(), output.emptyPageNumbers)
+        assertEquals(2, output.pageCount)
+    }
+
     private fun jsonResponse(body: String) = MockResponse()
         .setHeader("Content-Type", "application/json")
         .setBody(body)

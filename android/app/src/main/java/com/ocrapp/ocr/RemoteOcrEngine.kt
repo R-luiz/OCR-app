@@ -183,11 +183,19 @@ class RemoteOcrEngine @Inject constructor(
         val markdown = output.markdown.ifBlank {
             output.pages.sortedBy { it.index }.joinToString("\n\n") { it.markdown }
         }
+        // Two ways a page can go missing, and both must be visible rather than left
+        // to be inferred from a document that looks complete: the backend recognized
+        // nothing on a page and said so, or it described fewer pages than were sent.
+        val describedPages = output.pages.size.takeIf { it > 0 } ?: pageCount
+        val missing = (output.emptyPages.map { it + 1 } +
+            ((describedPages + 1)..pageCount)).distinct().sorted()
+
         return OcrOutput(
             plainText = MarkdownToPlainText.convert(markdown),
             markdown = markdown,
             engine = EngineType.DOCUMENT,
-            pageCount = output.pages.size.takeIf { it > 0 } ?: pageCount,
+            pageCount = pageCount,
+            emptyPageNumbers = missing,
         )
     }
 
