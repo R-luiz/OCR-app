@@ -52,8 +52,20 @@ MAX_IMAGE_PIXELS = int(os.environ.get("MAX_IMAGE_PIXELS", str(80_000_000)))
 # decoding without going through decode_image().
 Image.MAX_IMAGE_PIXELS = MAX_IMAGE_PIXELS
 
-PROMPT_SINGLE = "<image>document parsing."
-PROMPT_MULTI = "<image>Multi page parsing."
+IMAGE_TOKEN = "<image>"
+PROMPT_SINGLE = f"{IMAGE_TOKEN}document parsing."
+MULTI_INSTRUCTION = "Multi page parsing."
+
+
+def build_multi_prompt(page_count: int) -> str:
+    """One ``<image>`` per page, then the instruction.
+
+    vLLM binds each supplied image to its own placeholder in the prompt, so a prompt
+    carrying a single ``<image>`` alongside N images fails on the second one with
+    ``Failed to apply prompt replacement for mm_items['image'][1]`` — which is exactly
+    what every multi-page request did until this was fixed.
+    """
+    return IMAGE_TOKEN * max(page_count, 1) + MULTI_INSTRUCTION
 
 # Baidu's inference examples use these for both Transformers and SGLang.
 NGRAM_SIZE = 35
@@ -78,7 +90,7 @@ class OcrRequest:
     base_size: int = 1024
     image_size: int = 1024
     crop_mode: bool = False
-    prompt: str = PROMPT_MULTI
+    prompt: str = PROMPT_SINGLE
     ngram_window: int = NGRAM_WINDOW_MULTI
     warnings: list[str] = field(default_factory=list)
 
@@ -174,7 +186,7 @@ def parse_request(job_input: Any) -> OcrRequest:
         # Multi-page parsing is only defined for the flat 1024px configuration.
         image_size=1024,
         crop_mode=False,
-        prompt=PROMPT_MULTI,
+        prompt=build_multi_prompt(len(decoded)),
         ngram_window=NGRAM_WINDOW_MULTI,
         warnings=warnings,
     )

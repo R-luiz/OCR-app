@@ -14,6 +14,8 @@ from PIL import Image
 
 from handler import (
     EXTRA_ARG_NGRAM_WINDOW,
+    IMAGE_TOKEN,
+    build_multi_prompt,
     InvalidInput,
     NGRAM_SIZE,
     NoRepeatNGramLogitsProcessor,
@@ -238,3 +240,31 @@ class TestRequestNgramProcessor:
         logits = [0.0] * 10
         processor([5, 1, 5], logits)
         assert logits[1] == float("-inf")
+
+
+class TestPromptPlaceholders:
+    """vLLM binds each supplied image to its own <image> placeholder and asserts if one
+    is missing, so the count must track the page count exactly. A single placeholder
+    with several images failed every multi-page job with
+    "Failed to apply prompt replacement for mm_items['image'][1]"."""
+
+    @pytest.mark.parametrize("pages", [1, 2, 4, 16, 64])
+    def test_one_placeholder_per_page(self, pages):
+        assert build_multi_prompt(pages).count(IMAGE_TOKEN) == pages
+
+    def test_instruction_follows_the_placeholders(self):
+        prompt = build_multi_prompt(3)
+        assert prompt == IMAGE_TOKEN * 3 + "Multi page parsing."
+
+    def test_never_emits_zero_placeholders(self):
+        # A prompt with no image token cannot bind any image at all.
+        assert build_multi_prompt(0).count(IMAGE_TOKEN) == 1
+
+    def test_parsed_multi_request_matches_its_page_count(self):
+        for pages in (2, 5):
+            request = parse_request({"images": [_png_data_url()] * pages})
+            assert request.prompt.count(IMAGE_TOKEN) == len(request.images) == pages
+
+    def test_parsed_single_request_has_exactly_one(self):
+        request = parse_request({"images": [_png_data_url()]})
+        assert request.prompt.count(IMAGE_TOKEN) == len(request.images) == 1
