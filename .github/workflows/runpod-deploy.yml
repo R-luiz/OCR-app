@@ -31,6 +31,10 @@ on:
         description: "Pages to send in the smoke test. >1 exercises the multi-page path the app uses for every PDF"
         type: string
         required: false
+      idle_timeout:
+        description: "Seconds to hold a worker after a job (default 300). Higher = fewer cold starts, more idle GPU billed"
+        type: string
+        required: false
 
 jobs:
   deploy:
@@ -112,7 +116,10 @@ jobs:
         env:
           RUNPOD_API_KEY: ${{ secrets.RUNPOD_API_KEY }}
           RUNPOD_NETWORK_VOLUME_ID: ${{ inputs.network_volume_id }}
-        run: python backend/deploy_runpod.py --confirm --image "$IMAGE"
+        run: |
+          IDLE="${{ inputs.idle_timeout }}"
+          python backend/deploy_runpod.py --confirm --image "$IMAGE" \
+            ${IDLE:+--idle-timeout "$IDLE"}
 
       # Deploys, then submits a real page and waits for markdown. This is the
       # first time Unlimited-OCR actually runs — CI has no GPU of its own.
@@ -124,9 +131,11 @@ jobs:
         run: |
           PAGES="${{ inputs.smoke_test_pages }}"
           if [ -z "$PAGES" ]; then PAGES=1; fi
+          IDLE="${{ inputs.idle_timeout }}"
           python backend/deploy_runpod.py --confirm --image "$IMAGE" \
             --smoke-test android/app/src/androidTest/assets/sample_page.png \
-            --smoke-test-pages "$PAGES"
+            --smoke-test-pages "$PAGES" \
+            ${IDLE:+--idle-timeout "$IDLE"}
 
       # Read-only: no job submitted, no GPU spent. The fast way to tell "worker
       # is still cold-starting" apart from "no worker is being scheduled at all".

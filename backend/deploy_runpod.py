@@ -143,6 +143,21 @@ def deploy(runpod, args) -> str:
         endpoint_id = existing["id"]
         print(f"endpoint {ENDPOINT_NAME} already exists ({endpoint_id}); repointing it")
         runpod.update_endpoint_template(endpoint_id=endpoint_id, template_id=template_id)
+        # update_endpoint_template touches only the template, so an existing endpoint
+        # keeps whatever idle timeout and FlashBoot setting it happens to carry —
+        # including a FlashBoot that an earlier recycle-workers run cleared. Re-save
+        # so a deploy actually converges the endpoint on the configuration this
+        # script asks for, rather than only on the image.
+        saved = _save_endpoint(
+            _find_endpoint_by_id(runpod, endpoint_id),
+            workers_max=args.workers_max,
+            idle_timeout=args.idle_timeout,
+        )
+        print(
+            f"  idleTimeout {saved.get('idleTimeout')}s, "
+            f"flashBoot {saved.get('flashBootType')}, "
+            f"workersMax {saved.get('workersMax')}",
+        )
         return endpoint_id
 
     print(f"creating endpoint {ENDPOINT_NAME} on {args.gpu_ids}")
@@ -366,24 +381,36 @@ def _find_endpoint_by_id(runpod, endpoint_id: str) -> dict:
     raise DeployError(f"endpoint {endpoint_id} not found on this account")
 
 
-def _save_endpoint(endpoint: dict, workers_max: int) -> dict:
+def _save_endpoint(
+    endpoint: dict,
+    workers_max: int,
+    idle_timeout: int | None = None,
+) -> dict:
     """Re-saves an endpoint with a new workersMax, leaving everything else as-is.
 
     saveEndpoint replaces the whole input object rather than patching it, so every
     field is re-sent from the values the API just returned for this endpoint — the
     same field set runpod's own create_endpoint sends, plus ``id`` to target the
     existing record. Anything omitted here would be cleared, hence the round trip.
+
+    ``flashBootType`` is the exception: it is set unconditionally rather than round
+    tripped, because RunPod's endpoint query does not return it. Omitting it, which
+    is what this function used to do, meant every recycle-workers run silently
+    turned FlashBoot off — the one setting that keeps cold starts short on an
+    endpoint whose image is ~8.8 GB. A cold start is the single longest wait the
+    app ever shows, so losing this is expensive and invisible.
     """
     from runpod.api.graphql import run_graphql_query
 
     fields = [
+        "flashBootType: FLASHBOOT",
         f'id: "{endpoint["id"]}"',
         f'name: "{endpoint["name"]}"',
         f'templateId: "{endpoint["templateId"]}"',
         f'gpuIds: "{endpoint["gpuIds"]}"',
         f'networkVolumeId: "{endpoint.get("networkVolumeId") or ""}"',
         f'locations: "{endpoint.get("locations") or ""}"',
-        f"idleTimeout: {int(endpoint['idleTimeout'])}",
+        f"idleTimeout: {int(idle_timeout if idle_timeout is not None else endpoint['idleTimeout'])}",
         f'scalerType: "{endpoint["scalerType"]}"',
         f"scalerValue: {int(endpoint['scalerValue'])}",
         f"workersMin: {int(endpoint['workersMin'])}",
@@ -395,7 +422,7 @@ def _save_endpoint(endpoint: dict, workers_max: int) -> dict:
     mutation = (
         "mutation { saveEndpoint(input: { "
         + ", ".join(fields)
-        + " }) { id name templateId workersMin workersMax } }"
+        + " }) { id name templateId workersMin workersMax idleTimeout flashBootType } }"
     )
     return run_graphql_query(mutation)["data"]["saveEndpoint"]
 
@@ -491,7 +518,12 @@ def main() -> int:
     parser.add_argument("--gpu-ids", default=DEFAULT_GPU_IDS)
     parser.add_argument("--network-volume-id", default=os.environ.get("RUNPOD_NETWORK_VOLUME_ID") or None)
     parser.add_argument("--container-disk-gb", type=int, default=DEFAULT_CONTAINER_DISK_GB)
-    parser.add_argument("--idle-timeout", type=int, default=60)
+    # A cold start on this endpoint is ~5 minutes: an ~8.8 GB image pull plus a
+    # 6.7 GB weight load. At a 60s idle timeout essentially every scan paid it,
+    # because nobody sends a second document within a minute of the first. Holding
+    # the worker for 5 minutes means one wait per sitting instead of one per scan,
+    # at the cost of billing up to 5 idle GPU-minutes after each use.
+    parser.add_argument("--idle-timeout", type=int, default=300)
     parser.add_argument("--workers-max", type=int, default=1)
     parser.add_argument("--dry-run", action="store_true", help="inspect the account, create nothing")
     parser.add_argument(

@@ -21,6 +21,7 @@ import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.widthIn
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
@@ -50,6 +51,7 @@ import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
@@ -59,6 +61,7 @@ import androidx.compose.ui.draw.clip
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.res.pluralStringResource
 import androidx.compose.ui.res.stringResource
+import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.viewinterop.AndroidView
 import androidx.compose.ui.unit.dp
 import androidx.core.content.ContextCompat
@@ -68,6 +71,7 @@ import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.ocrapp.R
 import com.ocrapp.ocr.EngineType
 import com.ocrapp.ocr.OcrStage
+import kotlinx.coroutines.delay
 import java.io.File
 import java.util.concurrent.Executor
 
@@ -415,10 +419,53 @@ private fun ProcessingOverlay(stage: OcrStage?, pagesDone: Int = 0, pagesTotal: 
                     },
                     style = MaterialTheme.typography.bodyMedium,
                 )
+
+                // A cold start on a scaled-to-zero GPU endpoint runs into minutes: the
+                // worker has to pull an ~8.8 GB image and load 6.7 GB of weights before
+                // it can look at the first page. A bare spinner through that is
+                // indistinguishable from a hang, so count the time out loud and say what
+                // is being waited on.
+                if (stage == OcrStage.QUEUED || stage == OcrStage.RUNNING) {
+                    val elapsed = rememberElapsedSeconds(stage)
+                    Spacer(Modifier.height(8.dp))
+                    Text(
+                        text = formatElapsed(elapsed),
+                        style = MaterialTheme.typography.labelLarge,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                    if (stage == OcrStage.QUEUED && elapsed >= COLD_START_HINT_SECONDS) {
+                        Spacer(Modifier.height(8.dp))
+                        Text(
+                            text = stringResource(R.string.progress_cold_start),
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            textAlign = TextAlign.Center,
+                            modifier = Modifier.widthIn(max = 240.dp),
+                        )
+                    }
+                }
             }
         }
     }
 }
+
+/** Seconds since [stage] was entered, ticking once a second. */
+@Composable
+private fun rememberElapsedSeconds(stage: OcrStage?): Int {
+    var elapsed by remember(stage) { mutableIntStateOf(0) }
+    LaunchedEffect(stage) {
+        while (true) {
+            delay(1_000)
+            elapsed += 1
+        }
+    }
+    return elapsed
+}
+
+private fun formatElapsed(seconds: Int): String = "%d:%02d".format(seconds / 60, seconds % 60)
+
+/** How long a queued job may sit before the wait is explained rather than just shown. */
+private const val COLD_START_HINT_SECONDS = 15
 
 private fun takePicture(
     context: Context,

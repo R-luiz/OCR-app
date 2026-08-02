@@ -54,6 +54,7 @@
     <string name="progress_uploading">Uploading…</string>
     <string name="progress_queued">Waiting for a GPU worker…</string>
     <string name="progress_running">Parsing document…</string>
+    <string name="progress_cold_start">Your GPU endpoint is starting up. The first scan after a pause takes a few minutes; later ones are quick.</string>
     <string name="progress_recognizing">Recognizing text…</string>
 
     <string name="error_no_backend">No backend configured — used on-device Quick scan instead.</string>

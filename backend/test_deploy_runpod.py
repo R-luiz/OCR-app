@@ -85,3 +85,54 @@ def test_missing_endpoint_fails_instead_of_deploying(monkeypatch, fake_runpod):
 def test_no_read_only_flag_reaches_the_dry_run(monkeypatch, fake_runpod):
     """Omitting the flags entirely leaves args at None, which is still the dry run."""
     assert run_main(monkeypatch) == 0
+
+
+ENDPOINT = {
+    "id": "abc123",
+    "name": deploy_runpod.ENDPOINT_NAME,
+    "templateId": "tpl1",
+    "gpuIds": "ADA_48_PRO",
+    "networkVolumeId": None,
+    "locations": None,
+    "idleTimeout": 60,
+    "scalerType": "QUEUE_DELAY",
+    "scalerValue": 4,
+    "workersMin": 0,
+    "workersMax": 1,
+}
+
+
+@pytest.fixture
+def captured_mutation(monkeypatch):
+    """Captures the GraphQL string _save_endpoint sends, without sending it."""
+    sent: list[str] = []
+
+    graphql = types.ModuleType("runpod.api.graphql")
+    graphql.run_graphql_query = lambda mutation: (
+        sent.append(mutation) or {"data": {"saveEndpoint": {"id": "abc123"}}}
+    )
+    monkeypatch.setitem(sys.modules, "runpod.api.graphql", graphql)
+    return sent
+
+
+def test_save_endpoint_always_sets_flashboot(captured_mutation):
+    """saveEndpoint replaces its whole input rather than patching it, and RunPod's
+    endpoint query never returns flashBootType — so a save that omits it silently
+    turns FlashBoot off. That happened on every recycle-workers run, and FlashBoot is
+    what keeps the cold start on an ~8.8 GB image from being the app's longest wait."""
+    deploy_runpod._save_endpoint(dict(ENDPOINT), workers_max=1)
+
+    assert "flashBootType: FLASHBOOT" in captured_mutation[0]
+
+
+def test_save_endpoint_can_change_the_idle_timeout(captured_mutation):
+    deploy_runpod._save_endpoint(dict(ENDPOINT), workers_max=1, idle_timeout=300)
+
+    assert "idleTimeout: 300" in captured_mutation[0]
+
+
+def test_save_endpoint_keeps_the_existing_idle_timeout_by_default(captured_mutation):
+    """Draining workers must not quietly rewrite unrelated configuration."""
+    deploy_runpod._save_endpoint(dict(ENDPOINT), workers_max=0)
+
+    assert "idleTimeout: 60" in captured_mutation[0]
