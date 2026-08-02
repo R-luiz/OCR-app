@@ -27,6 +27,10 @@ on:
         description: "Image tag to deploy. Defaults to this ref's commit SHA — an immutable tag, unlike :latest"
         type: string
         required: false
+      smoke_test_pages:
+        description: "Pages to send in the smoke test. >1 exercises the multi-page path the app uses for every PDF"
+        type: string
+        required: false
 
 jobs:
   deploy:
@@ -118,8 +122,11 @@ jobs:
           RUNPOD_API_KEY: ${{ secrets.RUNPOD_API_KEY }}
           RUNPOD_NETWORK_VOLUME_ID: ${{ inputs.network_volume_id }}
         run: |
+          PAGES="${{ inputs.smoke_test_pages }}"
+          if [ -z "$PAGES" ]; then PAGES=1; fi
           python backend/deploy_runpod.py --confirm --image "$IMAGE" \
-            --smoke-test android/app/src/androidTest/assets/sample_page.png
+            --smoke-test android/app/src/androidTest/assets/sample_page.png \
+            --smoke-test-pages "$PAGES"
 
       # Read-only: no job submitted, no GPU spent. The fast way to tell "worker
       # is still cold-starting" apart from "no worker is being scheduled at all".

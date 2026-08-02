@@ -65,10 +65,17 @@ interface OcrEngine {
     ): Result<OcrOutput>
 }
 
-/** Why a Document-parsing request ended up served by the on-device engine instead. */
+/**
+ * Why a Document-parsing request ended up served by the on-device engine instead.
+ *
+ * [BACKEND_ERROR] is deliberately distinct from [UNREACHABLE]: a job that ran and came
+ * back with an error means the endpoint answered fine, and reporting that as
+ * "unreachable" sends the user to check their network for a problem that is not there.
+ */
 enum class FallbackReason {
     NOT_CONFIGURED,
     UNREACHABLE,
+    BACKEND_ERROR,
 }
 
 /** Raised when the remote engine is selected but not usable, triggering fallback. */

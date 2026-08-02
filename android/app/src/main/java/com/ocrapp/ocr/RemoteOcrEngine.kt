@@ -77,7 +77,7 @@ class RemoteOcrEngine @Inject constructor(
                 )
 
                 is HttpException -> BackendUnavailableException(
-                    FallbackReason.UNREACHABLE,
+                    FallbackReason.BACKEND_ERROR,
                     "RunPod returned HTTP ${error.code()}",
                     error,
                 )
@@ -170,13 +170,13 @@ class RemoteOcrEngine @Inject constructor(
     private fun toOutput(job: RunPodJob, pageCount: Int): OcrOutput {
         if (!job.isSuccess) {
             throw BackendUnavailableException(
-                FallbackReason.UNREACHABLE,
+                FallbackReason.BACKEND_ERROR,
                 job.error ?: "RunPod job finished with status ${job.status}",
             )
         }
         val output = job.output
             ?: throw BackendUnavailableException(
-                FallbackReason.UNREACHABLE,
+                FallbackReason.BACKEND_ERROR,
                 "RunPod job completed with no output",
             )
 

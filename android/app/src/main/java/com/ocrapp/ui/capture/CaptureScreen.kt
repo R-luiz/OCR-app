@@ -40,6 +40,7 @@ import androidx.compose.material3.Scaffold
 import androidx.compose.material3.SegmentedButton
 import androidx.compose.material3.SegmentedButtonDefaults
 import androidx.compose.material3.SingleChoiceSegmentedButtonRow
+import androidx.compose.material3.SnackbarDuration
 import androidx.compose.material3.SnackbarHost
 import androidx.compose.material3.SnackbarHostState
 import androidx.compose.material3.Surface
@@ -116,9 +117,21 @@ fun CaptureScreen(
     }
 
     state.messageRes?.let { messageRes ->
-        val message = stringResource(messageRes)
+        // The backend's own words go after the generic sentence, and the snackbar is
+        // held open longer when there are any: a fallback on a paid backend is worth
+        // reading, and the specific cause is the only actionable part of it.
+        val generic = stringResource(messageRes)
+        val detail = state.fallbackDetail
+        val message = if (detail.isNullOrBlank()) generic else "$generic\n$detail"
         LaunchedEffect(messageRes, message) {
-            snackbarHostState.showSnackbar(message)
+            snackbarHostState.showSnackbar(
+                message = message,
+                duration = if (detail.isNullOrBlank()) {
+                    SnackbarDuration.Short
+                } else {
+                    SnackbarDuration.Long
+                },
+            )
             viewModel.onMessageShown()
         }
     }
