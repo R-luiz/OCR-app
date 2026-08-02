@@ -186,9 +186,19 @@ class RemoteOcrEngine @Inject constructor(
         // Two ways a page can go missing, and both must be visible rather than left
         // to be inferred from a document that looks complete: the backend recognized
         // nothing on a page and said so, or it described fewer pages than were sent.
-        val describedPages = output.pages.size.takeIf { it > 0 } ?: pageCount
-        val missing = (output.emptyPages.map { it + 1 } +
-            ((describedPages + 1)..pageCount)).distinct().sorted()
+        //
+        // Neither test applies to long-context output. There the model produces one
+        // stream for the whole document and the backend's page split is a guess, so a
+        // short `pages` list means the delimiter was not found — the text is all
+        // present in the markdown. Counting that as lost pages would warn about a
+        // document that is entirely intact.
+        val missing = if (output.isLongContext) {
+            emptyList()
+        } else {
+            val describedPages = output.pages.size.takeIf { it > 0 } ?: pageCount
+            (output.emptyPages.map { it + 1 } +
+                ((describedPages + 1)..pageCount)).distinct().sorted()
+        }
 
         return OcrOutput(
             plainText = MarkdownToPlainText.convert(markdown),

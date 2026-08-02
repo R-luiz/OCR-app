@@ -267,7 +267,19 @@ def smoke_test(
     # reads like a plausible document while silently missing a page. Check the count.
     returned = output.get("pages") or []
     blank = [page.get("index") for page in returned if not str(page.get("markdown", "")).strip()]
-    print(f"\npages: sent {pages}, returned {len(returned)}, blank {blank or 'none'}")
+    page_mode = output.get("page_mode", "per_page")
+    print(f"\npages: sent {pages}, returned {len(returned)}, blank {blank or 'none'}, "
+          f"mode {page_mode}")
+    for warning in output.get("warnings") or []:
+        print(f"  warning: {warning}")
+
+    # Long-context output is one stream for the whole document, so the backend's page
+    # split is a guess and a short list means no delimiter was found, not lost text.
+    # Holding it to a per-page count would fail runs that parsed the document fine.
+    if page_mode == "long_context":
+        print(f"OK — {len(markdown)} chars of markdown, parsed in one long-context pass\n")
+        print(markdown[:2000])
+        return 0
 
     if len(returned) != pages:
         print(

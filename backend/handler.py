@@ -60,12 +60,25 @@ MULTI_INSTRUCTION = "Multi page parsing."
 def build_multi_prompt(page_count: int) -> str:
     """One ``<image>`` per page, then the instruction.
 
-    vLLM binds each supplied image to its own placeholder in the prompt, so a prompt
-    carrying a single ``<image>`` alongside N images fails on the second one with
-    ``Failed to apply prompt replacement for mm_items['image'][1]`` — which is exactly
-    what every multi-page request did until this was fixed.
+    This is the format the model's own processor requires, read out of the image
+    rather than inferred: ``DeepseekOCRProcessor.tokenize_with_images`` opens with
+
+        assert conversation.count(self.image_token) == len(images)
+
+    and splits the prompt on that token to pair each text run with its image.
+    ``DeepseekOCRDummyInputsBuilder.get_dummy_text`` builds ``image_token *
+    num_images`` the same way, with no separator between placeholders.
     """
     return IMAGE_TOKEN * max(page_count, 1) + MULTI_INSTRUCTION
+
+
+# Whether multi-page requests go through the model's long-context path — every page
+# in one generate() call, so the decoder carries context across page boundaries —
+# rather than being inferred a page at a time. Settable per request; this is the
+# default when the request says nothing.
+LONG_CONTEXT_DEFAULT = os.environ.get("LONG_CONTEXT_MULTI", "1").lower() not in (
+    "0", "false", "no",
+)
 
 # Baidu's inference examples use these for both Transformers and SGLang.
 NGRAM_SIZE = 35
@@ -97,6 +110,7 @@ class OcrRequest:
     crop_mode: bool = False
     prompt: str = PROMPT_SINGLE
     ngram_window: int = NGRAM_WINDOW_MULTI
+    long_context: bool = False
     warnings: list[str] = field(default_factory=list)
 
 
@@ -184,6 +198,8 @@ def parse_request(job_input: Any) -> OcrRequest:
             warnings=warnings,
         )
 
+    long_context = bool(job_input.get("long_context", LONG_CONTEXT_DEFAULT))
+
     return OcrRequest(
         mode=mode,
         images=decoded,
@@ -192,10 +208,11 @@ def parse_request(job_input: Any) -> OcrRequest:
         image_size=1024,
         crop_mode=False,
         prompt=build_multi_prompt(len(decoded)),
-        # Each page is inferred on its own now, so the repetition window that applies
-        # is the single-page one. NGRAM_WINDOW_MULTI was sized for one long
-        # whole-document generation that no longer happens.
-        ngram_window=NGRAM_WINDOW_SINGLE,
+        # The long-context path is one long whole-document generation, which is what
+        # the wider repetition window was sized for. Per-page inference is a series of
+        # single-page generations, so it takes the single-page window.
+        ngram_window=NGRAM_WINDOW_MULTI if long_context else NGRAM_WINDOW_SINGLE,
+        long_context=long_context,
         warnings=warnings,
     )
 
@@ -365,6 +382,50 @@ def get_engine():
     return _engine
 
 
+def _sampling_params(ngram_window: int):
+    from vllm import SamplingParams
+
+    return SamplingParams(
+        temperature=0.0,
+        # None means "generate until EOS or the context is full". An explicit cap of
+        # MAX_MODEL_LEN here would be rejected outright: current vLLM refuses any
+        # request whose prompt tokens + max_tokens exceed max_model_len rather than
+        # clamping, and a multimodal prompt always occupies tokens.
+        max_tokens=None,
+        skip_special_tokens=False,
+        extra_args={EXTRA_ARG_NGRAM_WINDOW: ngram_window},
+    )
+
+
+def run_long_context(request: OcrRequest) -> str:
+    """Parses every page in one generate() call and returns the whole document.
+
+    This is the path Unlimited-OCR is built around: the R-SWA decoder keeps the KV
+    cache flat across pages, so one 32K-context pass can carry structure over a page
+    break — a table split across two pages, a running header, numbering that only
+    makes sense in sequence. Per-page inference cannot see any of that.
+
+    Multi-image input is supported by the model's processor, which disables crop mode
+    for it (``UnlimitedOCRProcessor.tokenize_with_images``) and bypasses the per-item
+    processing cache to stay consistent with that. Both sides derive the crop flag
+    from the image count, so they agree.
+
+    Returns one blob for the whole document: the model is not asked to delimit pages
+    and nothing here pretends to know where the boundaries fell.
+    """
+    engine = get_engine()
+    outputs = engine.generate(
+        [{
+            "prompt": request.prompt,
+            "multi_modal_data": {"image": list(request.images)},
+        }],
+        _sampling_params(request.ngram_window),
+    )
+    if not outputs:
+        raise RuntimeError("long-context generate() returned no output")
+    return outputs[0].outputs[0].text
+
+
 def run_inference(request: OcrRequest) -> list[str]:
     """Runs one prompt per page and returns their markdown, in page order.
 
@@ -381,18 +442,7 @@ def run_inference(request: OcrRequest) -> list[str]:
     The pages are submitted as one batch, so vLLM schedules them together on the
     already-loaded model rather than paying a cold start each.
     """
-    from vllm import SamplingParams
-
-    sampling = SamplingParams(
-        temperature=0.0,
-        # None means "generate until EOS or the context is full". An explicit cap of
-        # MAX_MODEL_LEN here would be rejected outright: current vLLM refuses any
-        # request whose prompt tokens + max_tokens exceed max_model_len rather than
-        # clamping, and a multimodal prompt always occupies tokens.
-        max_tokens=None,
-        skip_special_tokens=False,
-        extra_args={EXTRA_ARG_NGRAM_WINDOW: request.ngram_window},
-    )
+    sampling = _sampling_params(request.ngram_window)
 
     prompts = [
         {"prompt": PROMPT_SINGLE, "multi_modal_data": {"image": [image]}}
@@ -445,13 +495,41 @@ def handler(job: dict[str, Any]) -> dict[str, Any]:
     except InvalidInput as exc:
         return {"error": str(exc)}
 
-    try:
-        raw = run_inference(request)
-    except Exception as exc:  # noqa: BLE001 - surfaced to the client, not swallowed
-        return {"error": f"inference failed: {type(exc).__name__}: {exc}"}
-
-    pages = assemble_pages(raw)
     warnings = list(request.warnings)
+    long_context = False
+
+    # The long-context path is tried first when asked for, and falls back to per-page
+    # inference if it raises. The fallback is not a way to hide a broken path: it is
+    # recorded in warnings and reported to the app, because losing cross-page context
+    # is a quality regression the caller deserves to know about — but losing the whole
+    # scan to it would be worse.
+    if request.long_context:
+        try:
+            document = run_long_context(request)
+            long_context = True
+        except Exception as exc:  # noqa: BLE001 - fall back, but say so
+            message = (
+                f"long-context parsing failed ({type(exc).__name__}: {exc}); "
+                "parsed page by page instead, so context does not carry across pages"
+            )
+            print(f"[unlimited-ocr] {message}", flush=True)
+            warnings.append(message)
+
+    if long_context:
+        document = clean_output(document)
+        # split_pages returns nothing when it cannot find one delimiter per page,
+        # which is the common case here: the model is not asked to delimit pages and
+        # need not. Falling back to a single page keeps the whole document intact and
+        # keeps `pages` non-empty, which the page-loss check downstream depends on.
+        pages = split_pages(document, len(request.images)) or (
+            [{"index": 0, "markdown": document}] if document else []
+        )
+    else:
+        try:
+            raw = run_inference(request)
+        except Exception as exc:  # noqa: BLE001 - surfaced to the client, not swallowed
+            return {"error": f"inference failed: {type(exc).__name__}: {exc}"}
+        pages = assemble_pages(raw)
 
     # A page that still produced nothing after its retries is reported, not buried:
     # the caller is otherwise handed a short document with no indication that part
@@ -464,9 +542,14 @@ def handler(job: dict[str, Any]) -> dict[str, Any]:
         )
 
     result: dict[str, Any] = {
-        "markdown": join_pages(pages),
+        "markdown": document if long_context else join_pages(pages),
         "pages": pages,
         "empty_pages": empty,
+        # Tells the caller whether `pages` are exact or recovered. Under long context
+        # the model emits one stream for the whole document and the split is a guess,
+        # so a "missing" page there means the delimiter was not found — not that the
+        # page went unread. The app needs the difference to avoid crying wolf.
+        "page_mode": "long_context" if long_context else "per_page",
         "model": MODEL_NAME,
         "elapsed_ms": int((time.monotonic() - started) * 1000),
     }
