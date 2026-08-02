@@ -137,8 +137,10 @@ class RemoteOcrEngineTest {
         assertEquals(1, server.requestCount)
     }
 
+    // A job that ran and failed is a backend error, not an unreachable endpoint: the
+    // endpoint answered, so telling the user to check their connection is misleading.
     @Test
-    fun `failed job surfaces as backend unavailable`() = runTest {
+    fun `failed job reports a backend error, not unreachable`() = runTest {
         server.enqueue(jsonResponse("""{"id":"job-3","status":"IN_QUEUE"}"""))
         server.enqueue(
             jsonResponse("""{"id":"job-3","status":"FAILED","error":"CUDA out of memory"}"""),
@@ -147,18 +149,19 @@ class RemoteOcrEngineTest {
         val error = engine.recognize(listOf(testPage())).exceptionOrNull()
 
         assertTrue(error is BackendUnavailableException)
-        assertEquals(FallbackReason.UNREACHABLE, (error as BackendUnavailableException).reason)
+        assertEquals(FallbackReason.BACKEND_ERROR, (error as BackendUnavailableException).reason)
+        // The worker's own words must survive: they are the only actionable part.
         assertEquals("CUDA out of memory", error.message)
     }
 
     @Test
-    fun `http error surfaces as backend unavailable rather than propagating`() = runTest {
+    fun `http error reports a backend error rather than propagating`() = runTest {
         server.enqueue(MockResponse().setResponseCode(401).setBody("unauthorized"))
 
         val error = engine.recognize(listOf(testPage())).exceptionOrNull()
 
         assertTrue(error is BackendUnavailableException)
-        assertEquals(FallbackReason.UNREACHABLE, (error as BackendUnavailableException).reason)
+        assertEquals(FallbackReason.BACKEND_ERROR, (error as BackendUnavailableException).reason)
         assertTrue(error.message.orEmpty(), error.message.orEmpty().contains("401"))
     }
 
@@ -181,6 +184,31 @@ class RemoteOcrEngineTest {
         assertTrue(error is BackendUnavailableException)
         assertEquals(FallbackReason.NOT_CONFIGURED, (error as BackendUnavailableException).reason)
         assertEquals(0, server.requestCount)
+    }
+
+    // The BACKEND_ERROR/UNREACHABLE split is only worth anything if a real transport
+    // failure still reports UNREACHABLE — otherwise every failure would read as though
+    // the endpoint had answered.
+    @Test
+    fun `transport failure still reports unreachable`() = runTest {
+        val unreachable = RemoteOcrEngine(
+            api = Retrofit.Builder()
+                // Port 1 is reserved and nothing listens there, so connecting fails
+                // with an IOException rather than any HTTP status.
+                .baseUrl("http://127.0.0.1:1/")
+                .addConverterFactory(
+                    Json.asConverterFactory("application/json".toMediaType()),
+                )
+                .build()
+                .create(RunPodApi::class.java),
+            credentialsProvider = { RunPodCredentials("endpoint", "key") },
+            normalizer = ImageNormalizer(),
+        )
+
+        val error = unreachable.recognize(listOf(testPage())).exceptionOrNull()
+
+        assertTrue(error is BackendUnavailableException)
+        assertEquals(FallbackReason.UNREACHABLE, (error as BackendUnavailableException).reason)
     }
 
     @Test
