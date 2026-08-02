@@ -197,8 +197,36 @@ def clean_output(text: str) -> str:
     return _SPECIAL_TOKEN_RE.sub("", text).strip()
 
 
+PAGE_SEPARATOR = "\n\n"
+
+
+def assemble_pages(raw_pages: list[str]) -> list[dict[str, Any]]:
+    """Cleans each page's output and indexes it.
+
+    Each page is now inferred separately, so the boundaries are exact rather than
+    recovered by hunting for delimiters in one blob — see :func:`split_pages`, which
+    remains only for output that did arrive as a single stream. Pages that come back
+    empty keep their slot, so page numbering still matches the document.
+    """
+    return [
+        {"index": index, "markdown": clean_output(text)}
+        for index, text in enumerate(raw_pages)
+    ]
+
+
+def join_pages(pages: list[dict[str, Any]]) -> str:
+    """The whole document as one markdown string, skipping pages that read blank."""
+    return PAGE_SEPARATOR.join(
+        page["markdown"] for page in pages if page["markdown"].strip()
+    )
+
+
 def split_pages(markdown: str, expected: int) -> list[dict[str, Any]]:
-    """Best-effort per-page split; returns ``[]`` when the split looks unreliable."""
+    """Best-effort per-page split of a single output stream.
+
+    Retained for output that arrives as one blob; per-page inference no longer needs
+    it, since :func:`assemble_pages` gets exact boundaries for free.
+    """
     if expected <= 1:
         return [{"index": 0, "markdown": markdown}] if markdown else []
 
@@ -314,7 +342,22 @@ def get_engine():
     return _engine
 
 
-def run_inference(request: OcrRequest) -> str:
+def run_inference(request: OcrRequest) -> list[str]:
+    """Runs one prompt per page and returns their markdown, in page order.
+
+    Every page goes through the single-image path, which is the configuration that
+    actually works: passing several images against one prompt fails inside vLLM's
+    multimodal processor with ``Failed to apply prompt replacement for
+    mm_items['image'][1]``.
+
+    This is a real trade-off, not a free win. Unlimited-OCR's headline feature is
+    parsing a whole document in one long-context pass, so cross-page context is lost
+    here. What it buys is a path that works today, and exact page boundaries: the
+    per-page split stops being a guess at delimiters in a single blob of output.
+
+    The pages are submitted as one batch, so vLLM schedules them together on the
+    already-loaded model rather than paying a cold start each.
+    """
     from vllm import SamplingParams
 
     sampling = SamplingParams(
@@ -328,14 +371,20 @@ def run_inference(request: OcrRequest) -> str:
         extra_args={EXTRA_ARG_NGRAM_WINDOW: request.ngram_window},
     )
 
-    outputs = get_engine().generate(
-        {
-            "prompt": request.prompt,
-            "multi_modal_data": {"image": request.images},
-        },
-        sampling,
-    )
-    return outputs[0].outputs[0].text
+    prompts = [
+        {"prompt": PROMPT_SINGLE, "multi_modal_data": {"image": [image]}}
+        for image in request.images
+    ]
+    outputs = get_engine().generate(prompts, sampling)
+
+    # generate() returns one output per prompt, in the order submitted. Assert that
+    # rather than assume it: a mismatch would silently drop or duplicate a page, and
+    # the result would still look like a plausible document.
+    if len(outputs) != len(prompts):
+        raise RuntimeError(
+            f"expected {len(prompts)} completions, got {len(outputs)}"
+        )
+    return [out.outputs[0].text for out in outputs]
 
 
 # --------------------------------------------------------------------------------------
@@ -355,10 +404,10 @@ def handler(job: dict[str, Any]) -> dict[str, Any]:
     except Exception as exc:  # noqa: BLE001 - surfaced to the client, not swallowed
         return {"error": f"inference failed: {type(exc).__name__}: {exc}"}
 
-    markdown = clean_output(raw)
+    pages = assemble_pages(raw)
     result: dict[str, Any] = {
-        "markdown": markdown,
-        "pages": split_pages(markdown, len(request.images)),
+        "markdown": join_pages(pages),
+        "pages": pages,
         "model": MODEL_NAME,
         "elapsed_ms": int((time.monotonic() - started) * 1000),
     }

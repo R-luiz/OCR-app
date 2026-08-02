@@ -16,6 +16,8 @@ from handler import (
     EXTRA_ARG_NGRAM_WINDOW,
     IMAGE_TOKEN,
     build_multi_prompt,
+    assemble_pages,
+    join_pages,
     InvalidInput,
     NGRAM_SIZE,
     NoRepeatNGramLogitsProcessor,
@@ -268,3 +270,41 @@ class TestPromptPlaceholders:
     def test_parsed_single_request_has_exactly_one(self):
         request = parse_request({"images": [_png_data_url()]})
         assert request.prompt.count(IMAGE_TOKEN) == len(request.images) == 1
+
+
+class TestAssemblePages:
+    """Each page is inferred separately now, so boundaries are exact rather than
+    recovered by splitting one blob on delimiters."""
+
+    def test_one_entry_per_page_in_order(self):
+        pages = assemble_pages(["page one", "page two", "page three"])
+        assert [p["index"] for p in pages] == [0, 1, 2]
+        assert [p["markdown"] for p in pages] == ["page one", "page two", "page three"]
+
+    def test_special_tokens_are_stripped_per_page(self):
+        pages = assemble_pages(["<|begin|>## A<|end▁of▁sentence|>", "  B  "])
+        assert [p["markdown"] for p in pages] == ["## A", "B"]
+
+    def test_blank_page_keeps_its_slot_so_numbering_survives(self):
+        # Dropping an empty page would shift every later page's number.
+        pages = assemble_pages(["first", "   ", "third"])
+        assert [p["index"] for p in pages] == [0, 1, 2]
+        assert pages[1]["markdown"] == ""
+        assert pages[2]["markdown"] == "third"
+
+    def test_no_pages_yields_no_entries(self):
+        assert assemble_pages([]) == []
+
+
+class TestJoinPages:
+    def test_joins_in_order(self):
+        assert join_pages(assemble_pages(["a", "b"])) == "a\n\nb"
+
+    def test_blank_pages_do_not_leave_gaps_in_the_document(self):
+        assert join_pages(assemble_pages(["a", "  ", "c"])) == "a\n\nc"
+
+    def test_single_page_is_unchanged(self):
+        assert join_pages(assemble_pages(["only"])) == "only"
+
+    def test_all_blank_yields_empty(self):
+        assert join_pages(assemble_pages(["", "  "])) == ""
