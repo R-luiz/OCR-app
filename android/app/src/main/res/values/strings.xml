@@ -38,6 +38,7 @@
     <string name="settings_api_key">RunPod API key</string>
     <string name="settings_test">Test connection</string>
     <string name="settings_saved">Settings saved</string>
+    <string name="settings_version">App version %1$s</string>
     <string name="settings_hint">Document parsing sends pages to your own RunPod Serverless endpoint. Leave blank to use on-device Quick scan only.</string>
 
     <string name="progress_preparing">Preparing pages…</string>
