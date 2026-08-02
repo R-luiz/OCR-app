@@ -29,8 +29,10 @@ android {
         // correct EXIF handling, instead of a BitmapFactory + ExifInterface fallback.
         minSdk = 28
         targetSdk = 35
-        versionCode = 1
-        versionName = "1.0"
+        // Kept in step with the release tags cut by .github/workflows/release.yml, so
+        // the version the Settings screen reports can be matched to a GitHub release.
+        versionCode = 3
+        versionName = "0.2.3"
 
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
 

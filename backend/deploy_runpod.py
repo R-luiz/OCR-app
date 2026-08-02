@@ -333,6 +333,32 @@ def health_check(endpoint_id: str, api_key: str) -> int:
     return 0
 
 
+def resolve_endpoint_id(given: str, api_key: str) -> str:
+    """Turns a possibly-blank endpoint ID into a real one by falling back to the
+    endpoint this repo deploys.
+
+    The blank case is not hypothetical: the deploy workflow passes its optional
+    `endpoint_id` input through verbatim, so leaving it empty used to hand the
+    read-only actions an empty string. That made the flag falsy, dropped the run
+    into the dry-run path, and reported success for a health check that never
+    contacted the endpoint.
+    """
+    if given:
+        return given
+
+    import runpod
+
+    runpod.api_key = api_key
+    existing = find_endpoint(runpod, ENDPOINT_NAME)
+    if not existing:
+        raise DeployError(
+            f"no endpoint ID given and no endpoint named {ENDPOINT_NAME} on this "
+            "account — pass the ID explicitly.",
+        )
+    print(f"no endpoint ID given; using {ENDPOINT_NAME} ({existing['id']})")
+    return existing["id"]
+
+
 def _find_endpoint_by_id(runpod, endpoint_id: str) -> dict:
     for endpoint in runpod.get_endpoints():
         if endpoint.get("id") == endpoint_id:
@@ -504,18 +530,35 @@ def main() -> int:
         print(f"error: {exc}", file=sys.stderr)
         return 2
 
-    if args.health_check:
-        return health_check(args.health_check, api_key)
+    # `is not None` rather than a truth test: these flags carry an endpoint ID, and
+    # an empty one still means "the caller asked for this action". Treating "" as
+    # "flag absent" silently ran a dry run instead and exited 0.
+    read_only_action = next(
+        (
+            (name, value)
+            for name, value in (
+                ("health_check", args.health_check),
+                ("purge_queue", args.purge_queue),
+                ("recycle_workers", args.recycle_workers),
+            )
+            if value is not None
+        ),
+        None,
+    )
 
-    if args.purge_queue:
-        return purge_queue(args.purge_queue, api_key)
-
-    if args.recycle_workers:
-        import runpod
-
-        runpod.api_key = api_key
+    if read_only_action:
+        action, given = read_only_action
         try:
-            return recycle_workers(runpod, args.recycle_workers, api_key)
+            endpoint_id = resolve_endpoint_id(given, api_key)
+            if action == "health_check":
+                return health_check(endpoint_id, api_key)
+            if action == "purge_queue":
+                return purge_queue(endpoint_id, api_key)
+
+            import runpod
+
+            runpod.api_key = api_key
+            return recycle_workers(runpod, endpoint_id, api_key)
         except DeployError as exc:
             print(f"error: {exc}", file=sys.stderr)
             return 1
