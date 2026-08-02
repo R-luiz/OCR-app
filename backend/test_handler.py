@@ -112,9 +112,26 @@ class TestParseRequest:
         assert request.mode == "multi"
         assert (request.image_size, request.crop_mode) == (1024, False)
         assert request.prompt.endswith("Multi page parsing.")
-        # Each page is inferred alone now, so the single-page window is the one
-        # that applies; the multi window was sized for a whole-document generation.
+        # Multi-page defaults to the long-context path, which is one whole-document
+        # generation — what the wider repetition window was sized for.
+        assert request.long_context is True
+        assert request.ngram_window == 1024
+
+    def test_long_context_can_be_turned_off_per_request(self):
+        request = parse_request({
+            "images": [_png_data_url(), _png_data_url()],
+            "long_context": False,
+        })
+        assert request.long_context is False
+        # Per-page inference is a series of single-page generations, so it takes the
+        # single-page window rather than the whole-document one.
         assert request.ngram_window == 128
+
+    def test_the_multi_prompt_carries_one_placeholder_per_page(self):
+        """The model's processor asserts exactly this, splitting the prompt on the
+        token to pair each text run with its image."""
+        request = parse_request({"images": [_png_data_url()] * 3})
+        assert request.prompt == "<image><image><image>Multi page parsing."
 
     def test_multi_mode_forces_flat_config_even_if_caller_asks_for_crops(self):
         request = parse_request(

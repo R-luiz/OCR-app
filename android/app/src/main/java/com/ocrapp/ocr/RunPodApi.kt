@@ -98,8 +98,24 @@ data class OcrJobOutput(
     @SerialName("elapsed_ms") val elapsedMs: Long? = null,
     /** Pages the model produced no text for, by zero-based index. */
     @SerialName("empty_pages") val emptyPages: List<Int> = emptyList(),
+    /**
+     * Whether [pages] are exact boundaries or a best-effort split.
+     *
+     * Under `long_context` the model emits one stream for the whole document and the
+     * backend guesses where pages divide, so a page "missing" from the list means the
+     * delimiter was not found — not that the page went unread. Defaults to the
+     * per-page value so an older backend keeps its existing, exact meaning.
+     */
+    @SerialName("page_mode") val pageMode: String = PAGE_MODE_PER_PAGE,
     val warnings: List<String> = emptyList(),
-)
+) {
+    val isLongContext: Boolean get() = pageMode == PAGE_MODE_LONG_CONTEXT
+
+    companion object {
+        const val PAGE_MODE_PER_PAGE = "per_page"
+        const val PAGE_MODE_LONG_CONTEXT = "long_context"
+    }
+}
 
 @Serializable
 data class OcrJobPage(
