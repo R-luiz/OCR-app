@@ -119,10 +119,13 @@ fun ResultScreen(
         snackbarHost = { SnackbarHost(snackbarHostState) },
     ) { padding ->
         Box(modifier = Modifier.fillMaxSize().padding(padding)) {
+            // Held in a local: `state` is a delegated property, so the compiler cannot
+            // smart-cast state.scan to non-null across the branches below.
+            val scan = state.scan
             when {
                 state.isLoading -> CircularProgressIndicator(Modifier.align(Alignment.Center))
 
-                state.scan == null -> Text(
+                scan == null -> Text(
                     text = stringResource(R.string.error_load_failed),
                     modifier = Modifier.align(Alignment.Center),
                 )
@@ -133,7 +136,7 @@ fun ResultScreen(
                     // unreachable, and the only other hints are a transient snackbar at
                     // scan time and the presence of the Markdown chips below. Reopen a
                     // scan later and both are easy to miss, so state it outright.
-                    EngineBadge(engine = state.scan.engineType)
+                    EngineBadge(engine = scan.engineType)
 
                     if (state.hasMarkdown) {
                         ViewModeChips(
