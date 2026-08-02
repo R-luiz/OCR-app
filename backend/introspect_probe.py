@@ -18,7 +18,7 @@ down with it, which is what the first version did: one ImportError and the whole
 run ended having printed nothing.
 """
 
-import inspect
+
 import json
 import os
 import traceback
@@ -74,72 +74,99 @@ def dump_tokenizer() -> None:
 
 
 def dump_token_files() -> None:
-    """Fallback for when the tokenizer will not load: these files are plain JSON."""
+    """Fallback for when the tokenizer will not load: these files are plain JSON.
+
+    Only image-related *tokens* are printed. Matching on the stringified value of a
+    top-level key instead dumped the entire added_tokens_decoder — thousands of
+    placeholder tokens — because one entry buried inside it mentioned an image.
+    """
     for name in ("added_tokens.json", "special_tokens_map.json", "tokenizer_config.json"):
         path = os.path.join(MODEL, name)
         if not os.path.exists(path):
             continue
         with open(path) as handle:
             data = json.load(handle)
-        interesting = {
-            key: value for key, value in data.items()
-            if "image" in str(key).lower() or "image" in str(value).lower()
-        }
-        print(f"{name}:", interesting or "<nothing image-related>")
+
+        found: list[str] = []
+
+        def walk(node, trail: str = "") -> None:
+            if isinstance(node, dict):
+                for key, value in node.items():
+                    walk(value, f"{trail}.{key}" if trail else str(key))
+            elif isinstance(node, list):
+                for index, value in enumerate(node):
+                    walk(value, f"{trail}[{index}]")
+            elif "image" in str(node).lower():
+                found.append(f"  {trail} = {node!r}")
+
+        walk(data)
+        print(f"{name}:")
+        print("\n".join(found) if found else "  <nothing image-related>")
 
 
-def _model_module():
-    from vllm.model_executor.models.registry import ModelRegistry
+def _model_source_files() -> list[str]:
+    """Finds vLLM's implementation of this architecture by searching its source.
+
+    Deliberately not ModelRegistry.resolve_model_cls: its signature differs across
+    vLLM releases (this build requires a model_config argument that earlier ones did
+    not), and the whole point of this probe is to survive the version it is pointed
+    at. A grep over the package has no API to break.
+    """
+    import vllm.model_executor.models as models_pkg
 
     if not architectures:
-        raise RuntimeError("no architectures from config.json; cannot resolve a model class")
-    model_cls, _ = ModelRegistry.resolve_model_cls(architectures[0])
-    return model_cls, inspect.getmodule(model_cls)
+        raise RuntimeError("no architectures from config.json; nothing to search for")
 
-
-def dump_vllm_processing() -> None:
-    """vLLM's own processor for this architecture — the thing that actually runs."""
-    model_cls, module = _model_module()
-    print("model class:", model_cls)
-    print("module:", module.__name__, module.__file__)
-
-    # The prompt contract lives in whichever class builds the prompt updates. Dump
-    # every candidate rather than guessing which one this architecture uses.
-    wanted = (
-        "_get_prompt_updates", "_get_prompt_replacements", "get_replacement",
-        "_get_mm_fields_config", "get_dummy_text", "_call_hf_processor",
-        "apply", "get_num_image_tokens", "get_image_size_with_most_features",
-    )
-    for attr in dir(module):
-        obj = getattr(module, attr)
-        if not inspect.isclass(obj):
+    root = os.path.dirname(models_pkg.__file__)
+    needle = architectures[0]
+    hits = []
+    for entry in sorted(os.listdir(root)):
+        if not entry.endswith(".py"):
             continue
-        if not any(tag in attr for tag in ("Processor", "ProcessingInfo", "DummyInputs")):
+        path = os.path.join(root, entry)
+        try:
+            with open(path, encoding="utf-8") as handle:
+                body = handle.read()
+        except OSError:
             continue
-        for meth in wanted:
-            fn = getattr(obj, meth, None)
-            if fn is None:
-                continue
-            print(f"\n--- {attr}.{meth} ---")
-            try:
-                print(inspect.getsource(fn))
-            except Exception as exc:  # noqa: BLE001 - best effort
-                print("  <no source>", exc)
+        # registry.py maps every architecture name to a module, so it matches too;
+        # it is worth printing, but the implementation file is the one that matters.
+        if needle in body and entry != "registry.py":
+            hits.append(path)
+    return hits
 
 
-def dump_module_source() -> None:
-    """Last resort: the whole vLLM model module.
+def dump_registry_entry() -> None:
+    """What vLLM's registry says this architecture maps to."""
+    import vllm.model_executor.models as models_pkg
 
-    When the class-name heuristics find nothing, the prompt contract is still in
-    here somewhere, and a few hundred lines of source beats another blind guess
-    costing a rebuild and a redeploy.
+    path = os.path.join(os.path.dirname(models_pkg.__file__), "registry.py")
+    needle = architectures[0] if architectures else ""
+    with open(path, encoding="utf-8") as handle:
+        for line in handle:
+            if needle and needle in line:
+                print(line.rstrip())
+
+
+def dump_vllm_source() -> None:
+    """The full source of vLLM's implementation for this architecture.
+
+    Printed whole rather than filtered down to methods guessed by name: the prompt
+    contract is what this probe exists to find, and a few hundred lines of source
+    beats another blind guess costing a rebuild and a redeploy.
     """
-    _, module = _model_module()
-    print(inspect.getsource(module))
+    files = _model_source_files()
+    if not files:
+        print("no vLLM source file mentions", architectures[0] if architectures else "?")
+        return
+    for path in files:
+        print(f"\n########## {path} ##########\n")
+        with open(path, encoding="utf-8") as handle:
+            print(handle.read())
 
 
 attempt("config.json", dump_config)
 attempt("tokenizer", dump_tokenizer)
 attempt("token files", dump_token_files)
-attempt("vLLM processing for this architecture", dump_vllm_processing)
-attempt("full vLLM model module source", dump_module_source)
+attempt("vLLM registry entry", dump_registry_entry)
+attempt("vLLM implementation source", dump_vllm_source)
