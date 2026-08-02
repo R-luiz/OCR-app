@@ -69,8 +69,17 @@ jobs:
           '
 
       # The model's own processor is the authority on what the prompt must contain.
+      #
+      # addict and matplotlib are imports of the model's Transformers remote code,
+      # which the worker image has no reason to carry — the served path is vLLM's own
+      # implementation. They are installed here only so the probe can also read the
+      # tokenizer; the probe still reports the vLLM side if this install fails.
       - name: Dump the multimodal prompt contract
         run: |
           docker run --rm -v "$PWD/backend/introspect_probe.py:/tmp/probe.py" \
-            --entrypoint /usr/local/bin/ocr-worker-python \
-            ghcr.io/r-luiz/ocr-app/unlimited-ocr-worker:latest /tmp/probe.py
+            --entrypoint bash \
+            ghcr.io/r-luiz/ocr-app/unlimited-ocr-worker:latest -c '
+              pip install --quiet --no-input addict matplotlib || \
+                echo "probe deps unavailable; continuing without the Transformers path"
+              /usr/local/bin/ocr-worker-python /tmp/probe.py
+            '
