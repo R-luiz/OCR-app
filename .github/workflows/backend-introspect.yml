@@ -62,3 +62,10 @@ jobs:
               exported = [n for n in dir(mod) if not n.startswith("_")]
               print(f"\n{name} exports:", exported)
           '
+
+      # The model's own processor is the authority on what the prompt must contain.
+      - name: Dump the multimodal prompt contract
+        run: |
+          docker run --rm -v "$PWD/backend/introspect_probe.py:/tmp/probe.py" \
+            --entrypoint /usr/local/bin/ocr-worker-python \
+            ghcr.io/r-luiz/ocr-app/unlimited-ocr-worker:latest /tmp/probe.py
