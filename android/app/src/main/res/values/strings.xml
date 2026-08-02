@@ -18,6 +18,8 @@
     <string name="mode_quick">Quick scan</string>
     <string name="mode_document">Document parsing</string>
     <string name="mode_quick_hint">On-device, instant, works offline</string>
+    <string name="result_engine_quick">Quick scan · on-device</string>
+    <string name="result_engine_document">Document parsing · Unlimited-OCR</string>
     <string name="mode_document_hint">Unlimited-OCR, layout-aware Markdown</string>
 
     <string name="result_title">Result</string>
