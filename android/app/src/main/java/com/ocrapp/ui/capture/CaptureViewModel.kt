@@ -42,6 +42,8 @@ data class CaptureUiState(
     val pagesTotal: Int = 0,
     /** Pages the import dropped for exceeding the page ceiling; 0 in the normal case. */
     val droppedPages: Int = 0,
+    /** Page numbers the backend returned no text for; empty in the normal case. */
+    val emptyPageNumbers: List<Int> = emptyList(),
 )
 
 @HiltViewModel
@@ -71,6 +73,10 @@ class CaptureViewModel @Inject constructor(
 
     fun onDroppedPagesShown() {
         _state.update { it.copy(droppedPages = 0) }
+    }
+
+    fun onEmptyPagesShown() {
+        _state.update { it.copy(emptyPageNumbers = emptyList()) }
     }
 
     fun recognize(uris: List<Uri>) {
@@ -147,6 +153,7 @@ class CaptureViewModel @Inject constructor(
                     messageRes = result.fallbackReason?.toMessageRes(),
                     fallbackDetail = result.fallbackDetail,
                     droppedPages = loaded.droppedPages,
+                    emptyPageNumbers = result.output.emptyPageNumbers,
                 )
             }
         }

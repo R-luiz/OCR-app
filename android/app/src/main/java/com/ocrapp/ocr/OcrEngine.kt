@@ -28,6 +28,14 @@ data class OcrOutput(
     val markdown: String?,
     val engine: EngineType,
     val pageCount: Int,
+    /**
+     * Pages the backend recognized no text on, by page number (1-based).
+     *
+     * Surfaced because a document that is short by a page still reads as complete:
+     * without this the user is handed a result with content missing and nothing to
+     * indicate it.
+     */
+    val emptyPageNumbers: List<Int> = emptyList(),
 )
 
 /**

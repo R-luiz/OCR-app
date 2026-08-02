@@ -136,6 +136,22 @@ fun CaptureScreen(
         }
     }
 
+    // A page the backend read nothing on is missing content, and the result still
+    // reads as a complete document, so it has to be said rather than inferred.
+    if (state.emptyPageNumbers.isNotEmpty()) {
+        val numbers = state.emptyPageNumbers.joinToString(", ")
+        val message = pluralStringResource(
+            R.plurals.pages_empty,
+            state.emptyPageNumbers.size,
+            state.emptyPageNumbers.size,
+            numbers,
+        )
+        LaunchedEffect(numbers, message) {
+            snackbarHostState.showSnackbar(message, duration = SnackbarDuration.Long)
+            viewModel.onEmptyPagesShown()
+        }
+    }
+
     // Truncation loses part of the user's document, so it is always said out loud
     // rather than left to be inferred from a short result.
     if (state.droppedPages > 0) {

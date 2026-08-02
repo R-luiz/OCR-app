@@ -96,6 +96,9 @@ data class OcrJobOutput(
     val pages: List<OcrJobPage> = emptyList(),
     val model: String? = null,
     @SerialName("elapsed_ms") val elapsedMs: Long? = null,
+    /** Pages the model produced no text for, by zero-based index. */
+    @SerialName("empty_pages") val emptyPages: List<Int> = emptyList(),
+    val warnings: List<String> = emptyList(),
 )
 
 @Serializable
