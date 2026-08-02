@@ -247,7 +247,28 @@ def smoke_test(
         print(f"FAIL: empty markdown: {json.dumps(job)[:600]}", file=sys.stderr)
         return 1
 
-    print(f"\nOK — {len(markdown)} chars of markdown\n")
+    # Non-empty markdown is not enough. Each page is parsed separately now, and a page
+    # that came back blank is dropped from the joined text — leaving output that still
+    # reads like a plausible document while silently missing a page. Check the count.
+    returned = output.get("pages") or []
+    blank = [page.get("index") for page in returned if not str(page.get("markdown", "")).strip()]
+    print(f"\npages: sent {pages}, returned {len(returned)}, blank {blank or 'none'}")
+
+    if len(returned) != pages:
+        print(
+            f"FAIL: sent {pages} pages but the response describes {len(returned)}",
+            file=sys.stderr,
+        )
+        return 1
+    if blank:
+        print(
+            f"FAIL: page(s) {blank} came back empty; their content is missing from the "
+            "document even though the job succeeded",
+            file=sys.stderr,
+        )
+        return 1
+
+    print(f"OK — {len(markdown)} chars of markdown across {len(returned)} pages\n")
     print(markdown[:2000])
     return 0
 
