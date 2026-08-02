@@ -6,7 +6,7 @@ An Android OCR app with two engines behind one interface:
   works offline, ~4 MB bundled into the APK.
 - **Document parsing** — Baidu [Unlimited-OCR](https://github.com/baidu/Unlimited-OCR)
   running on your own RunPod Serverless GPU endpoint. Returns layout-aware Markdown with
-  tables, and parses a whole multi-page document in a single request.
+  tables, and parses a whole multi-page document in a single job.
 
 Document parsing degrades to Quick scan (with a visible notice) whenever the backend is
 unconfigured or unreachable, so the app is always useful.
@@ -23,8 +23,9 @@ backend/   RunPod Serverless worker (vLLM + Unlimited-OCR)
 Unlimited-OCR is a ~3.3B-parameter vision-language model: DeepSeek-OCR's `DeepEncoder`
 (SAM-ViT + CLIP-ViT cascade, 16× token compression, 1024px page → 256 visual tokens)
 feeding a DeepSeek-V2 MoE decoder whose attention is replaced by Reference Sliding Window
-Attention. That R-SWA decoder keeps the KV cache flat across pages, which is what lets it
-parse dozens of pages in one 32K-context pass. bf16 weights are ~6.67 GB.
+Attention. That R-SWA decoder keeps the KV cache flat across pages, which is what lets the
+model parse dozens of pages in one 32K-context pass — a capability this worker does not
+yet exercise, see the `multi` note below. bf16 weights are ~6.67 GB.
 
 **It cannot be the app's only engine.** Baidu's supported runtimes — Transformers, vLLM,
 SGLang — are all CUDA-only. Mainline llama.cpp does carry the architecture (`deepseek2-ocr`
@@ -97,11 +98,24 @@ worker startup rather than inside the first request).
 }}
 ```
 
-`single` uses Baidu's "gundam" configuration (640px crops over a 1024px base);
-`multi` uses "base" (flat 1024px) and sends every page in one job. Response:
+`single` uses Baidu's "gundam" configuration (640px crops over a 1024px base).
+`multi` takes any number of pages in one job and returns one entry per page.
+
+Note that `multi` infers each page **separately**, batched into a single vLLM
+`generate` call — not as one long-context prompt. Unlimited-OCR's documented
+`Multi page parsing.` prompt is the R-SWA long-horizon path, and it is the more
+interesting one, but on this vLLM build supplying N images asserts inside the
+multimodal prompt-replacement pass (`Failed to apply prompt replacement for
+mm_items['image'][1]`). Per-page inference produces correct output today; the
+long-context path is unfinished work, not a rejected design. `backend/introspect_probe.py`
+exists to pin down the actual prompt contract from inside the image.
+
+Response — `empty_pages` lists any page the model returned nothing for, so a
+document that is short by a page cannot read as complete:
 
 ```json
 {"markdown": "...", "pages": [{"index": 0, "markdown": "..."}],
+ "empty_pages": [], "warnings": [],
  "model": "baidu/Unlimited-OCR", "elapsed_ms": 1234}
 ```
 
