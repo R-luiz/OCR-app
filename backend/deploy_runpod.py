@@ -401,6 +401,29 @@ def _patch_endpoint(endpoint_id: str, changes: dict) -> dict:
     return run_rest_request("PATCH", f"/v2/serverless/{endpoint_id}", json=changes)
 
 
+def _diagnose_startup(runpod, args, api_key: str) -> int:
+    endpoint_id = args.diagnose_startup
+    endpoint = _find_endpoint_by_id(runpod, endpoint_id)
+    env = endpoint.get("env") or {}
+    print(f"endpoint {endpoint_id}: temporarily load the model inside the test request")
+    try:
+        saved = _patch_endpoint(endpoint_id, {"env": {**env, "PRELOAD_MODEL": "0"}})
+        if (saved.get("env") or {}).get("PRELOAD_MODEL") != "0":
+            raise DeployError("Runpod did not confirm that model preloading was disabled")
+        return smoke_test(
+            endpoint_id,
+            api_key,
+            args.smoke_test,
+            args.smoke_test_timeout,
+            args.smoke_test_pages,
+        )
+    finally:
+        restored = _patch_endpoint(endpoint_id, {"env": env})
+        if (restored.get("env") or {}) != env:
+            raise DeployError("Runpod did not confirm restoration of the original worker environment")
+        print("Original worker environment restored")
+
+
 def _worker_counts(endpoint_id: str, api_key: str) -> dict:
     import urllib.request
 
@@ -529,7 +552,14 @@ def main() -> int:
         metavar="ENDPOINT_ID",
         help="drain the endpoint's workers so the next request starts a fresh container",
     )
+    parser.add_argument(
+        "--diagnose-startup",
+        metavar="ENDPOINT_ID",
+        help="test the current image with model preloading disabled, then restore the original environment",
+    )
     args = parser.parse_args()
+    if args.diagnose_startup and (not args.confirm or args.dry_run or not args.smoke_test):
+        parser.error("--diagnose-startup requires --confirm and --smoke-test")
 
     try:
         api_key = require_api_key()
@@ -573,6 +603,13 @@ def main() -> int:
     import runpod
 
     runpod.api_key = api_key
+
+    if args.diagnose_startup:
+        try:
+            return _diagnose_startup(runpod, args, api_key)
+        except DeployError as exc:
+            print(f"error: {exc}", file=sys.stderr)
+            return 1
 
     if args.dry_run or not args.confirm:
         print("DRY RUN — nothing will be created.\n")

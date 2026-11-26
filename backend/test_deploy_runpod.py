@@ -99,7 +99,7 @@ def rest_endpoint(monkeypatch, fake_runpod):
     def patch(method, path, *, json):
         assert (method, path) == ("PATCH", "/v2/serverless/abc123")
         changes = dict(json)
-        endpoint["workers"].update(changes.pop("workers"))
+        endpoint["workers"].update(changes.pop("workers", {}))
         endpoint["gpu"].update(changes.pop("gpu", {}))
         endpoint.update(changes)
         return endpoint
@@ -142,6 +142,24 @@ def test_deploy_keeps_request_count_scaling(monkeypatch, rest_endpoint):
     assert run_main(monkeypatch, "--confirm") == 0
     assert rest_endpoint["scaling"] == {"type": "REQUEST_COUNT", "requestCount": 2}
     assert "idleTimeout" not in rest_endpoint["workers"]
+
+
+def test_diagnose_startup_restores_worker_environment_after_failed_ocr(monkeypatch, rest_endpoint):
+    original = {"MAX_MODEL_LEN": "8192", "PRELOAD_MODEL": "1"}
+    rest_endpoint["env"] = original.copy()
+
+    def failed_ocr(endpoint_id, api_key, paths, timeout, pages):
+        assert endpoint_id == "abc123"
+        assert rest_endpoint["env"] == {**original, "PRELOAD_MODEL": "0"}
+        return 1
+
+    monkeypatch.setattr(deploy_runpod, "smoke_test", failed_ocr)
+
+    assert run_main(
+        monkeypatch, "--confirm", "--diagnose-startup", "abc123", "--smoke-test", "page.png",
+    ) == 1
+    assert rest_endpoint["env"] == original
+    assert rest_endpoint["image"] == "registry/worker:old"
 
 
 def test_recycle_restores_limits_when_health_check_fails(monkeypatch, rest_endpoint):

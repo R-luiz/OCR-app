@@ -11,6 +11,7 @@ on:
           - dry-run
           - deploy
           - deploy-and-smoke-test
+          - diagnose-startup
           - health-check
           - cancel-job
           - purge-queue
@@ -21,7 +22,7 @@ on:
         type: string
         required: false
       endpoint_id:
-        description: "Endpoint ID for health-check, cancel-job, purge-queue or recycle-workers"
+        description: "Endpoint ID for diagnose-startup, health-check, cancel-job, purge-queue or recycle-workers"
         type: string
         required: false
       image_tag:
@@ -144,7 +145,7 @@ jobs:
 
       # Submit fixture pages to the deployed endpoint; CI has no GPU of its own.
       - name: Deploy and smoke test
-        if: inputs.action == 'deploy-and-smoke-test'
+        if: inputs.action == 'deploy-and-smoke-test' || inputs.action == 'diagnose-startup'
         env:
           RUNPOD_API_KEY: ${{ secrets.RUNPOD_API_KEY }}
           RUNPOD_NETWORK_VOLUME_ID: ${{ inputs.network_volume_id }}
@@ -153,6 +154,8 @@ jobs:
           GPU_IDS: ${{ inputs.gpu_ids }}
           INIT_TIMEOUT: ${{ inputs.init_timeout }}
           CUDA_MIN: ${{ inputs.min_cuda_version }}
+          DIAGNOSE_STARTUP: ${{ inputs.action == 'diagnose-startup' }}
+          ENDPOINT_ID: ${{ inputs.endpoint_id }}
         run: |
           if [ -z "$PAGES" ]; then PAGES=1; fi
           FIXTURES=android/app/src/androidTest/assets
@@ -170,6 +173,15 @@ jobs:
               page.render(scale=1.5).to_pil().save(Path(sys.argv[2]) / f"ocr-page-{index}.png")
           PY
             IMAGES=("$RUNNER_TEMP/ocr-page-1.png" "$RUNNER_TEMP/ocr-page-2.png")
+          fi
+          if [ "$DIAGNOSE_STARTUP" = true ]; then
+            if [ -z "$ENDPOINT_ID" ]; then
+              echo "::error::Pass the endpoint ID for diagnose-startup."
+              exit 1
+            fi
+            python -u backend/deploy_runpod.py --confirm --diagnose-startup "$ENDPOINT_ID" \
+              --smoke-test "${IMAGES[@]}" --smoke-test-pages "$PAGES" --smoke-test-timeout 900
+            exit
           fi
           python -u backend/deploy_runpod.py --confirm --image "$IMAGE" \
             --smoke-test "${IMAGES[@]}" \
