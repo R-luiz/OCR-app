@@ -31,13 +31,18 @@ class QrCodeGenerator @Inject constructor() {
             QRCodeWriter().encode(text, BarcodeFormat.QR_CODE, sizePx, sizePx, hints)
         }.getOrNull() ?: return null
 
-        val bitmap = Bitmap.createBitmap(matrix.width, matrix.height, Bitmap.Config.ARGB_8888)
-        for (x in 0 until matrix.width) {
-            for (y in 0 until matrix.height) {
-                bitmap.setPixel(x, y, if (matrix.get(x, y)) Color.BLACK else Color.WHITE)
+        // Filled as one array and handed over whole. Bitmap.setPixel is a native call
+        // per pixel, which for a 768px code is well over half a million of them.
+        val width = matrix.width
+        val height = matrix.height
+        val pixels = IntArray(width * height)
+        for (y in 0 until height) {
+            val row = y * width
+            for (x in 0 until width) {
+                pixels[row + x] = if (matrix.get(x, y)) Color.BLACK else Color.WHITE
             }
         }
-        return bitmap
+        return Bitmap.createBitmap(pixels, width, height, Bitmap.Config.ARGB_8888)
     }
 
     private companion object {

@@ -108,4 +108,14 @@ class MarkdownParserTest {
     fun `empty input yields no blocks`() {
         assertEquals(emptyList<MarkdownBlock>(), MarkdownParser.parse(""))
     }
+
+    // The worker writes a literal pipe inside a cell as `\|`; it is text, not a column.
+    @Test
+    fun `keeps an escaped pipe inside its table cell`() {
+        val markdown = "| Op | Meaning |\n| --- | --- |\n| a \\| b | either |"
+
+        val table = MarkdownParser.parse(markdown).single() as MarkdownBlock.Table
+
+        assertEquals(listOf(listOf("a | b", "either")), table.rows)
+    }
 }

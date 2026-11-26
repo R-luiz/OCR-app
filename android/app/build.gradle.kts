@@ -9,15 +9,29 @@ plugins {
     alias(libs.plugins.hilt)
 }
 
-// RunPod credentials are read from local.properties (gitignored) so nothing
-// sensitive is committed. Both values are also editable at runtime in Settings,
-// which takes precedence over these build-time defaults.
+// Optional local defaults for debug builds only. Release credentials are always entered
+// at runtime, since any value in BuildConfig can be recovered from the APK.
 val localProperties = Properties().apply {
     val file = rootProject.file("local.properties")
     if (file.exists()) file.inputStream().use { load(it) }
 }
 
-fun localProperty(key: String): String = localProperties.getProperty(key).orEmpty()
+fun localStringLiteral(key: String): String = "\"" + localProperties.getProperty(key).orEmpty()
+    .replace("\\", "\\\\")
+    .replace("\"", "\\\"")
+    .replace("\r", "\\r")
+    .replace("\n", "\\n") + "\""
+
+// A release is signed with the keystore these four environment variables describe, when
+// they are set — the release workflow fills them from repository secrets. Without them
+// it is signed with the debug key instead, so `assembleRelease` works on any machine;
+// but Android only installs an update over a build signed with the same key.
+val releaseKeystore: String? = System.getenv("OCR_KEYSTORE_FILE")?.takeIf { it.isNotBlank() }
+
+// The phones a release is meant for. The x86 libraries only serve emulators and are a
+// third of the native code; `-Pocr.releaseAbis=x86_64` builds a release for one anyway.
+val releaseAbis: List<String> =
+    (providers.gradleProperty("ocr.releaseAbis").orNull ?: "arm64-v8a,armeabi-v7a").split(",")
 
 android {
     namespace = "com.ocrapp"
@@ -31,31 +45,49 @@ android {
         targetSdk = 35
         // Kept in step with the release tags cut by .github/workflows/release.yml, so
         // the version the Settings screen reports can be matched to a GitHub release.
-        versionCode = 3
-        versionName = "0.2.3"
+        versionCode = 4
+        versionName = "0.3.0"
 
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
 
-        buildConfigField(
-            "String",
-            "RUNPOD_ENDPOINT_ID",
-            "\"${localProperty("runpod.endpointId")}\"",
-        )
-        buildConfigField(
-            "String",
-            "RUNPOD_API_KEY",
-            "\"${localProperty("runpod.apiKey")}\"",
-        )
+        buildConfigField("String", "RUNPOD_ENDPOINT_ID", "\"\"")
+        buildConfigField("String", "RUNPOD_API_KEY", "\"\"")
+    }
+
+    signingConfigs {
+        if (releaseKeystore != null) {
+            create("release") {
+                storeFile = file(releaseKeystore)
+                storePassword = System.getenv("OCR_KEYSTORE_PASSWORD")
+                keyAlias = System.getenv("OCR_KEY_ALIAS")
+                keyPassword = System.getenv("OCR_KEY_PASSWORD")
+            }
+        }
     }
 
     buildTypes {
+        debug {
+            buildConfigField("String", "RUNPOD_ENDPOINT_ID", localStringLiteral("runpod.endpointId"))
+            buildConfigField("String", "RUNPOD_API_KEY", localStringLiteral("runpod.apiKey"))
+        }
         release {
             isMinifyEnabled = true
+            isShrinkResources = true
+            signingConfig = signingConfigs.findByName("release") ?: signingConfigs.getByName("debug")
+            ndk {
+                abiFilters += releaseAbis
+            }
             proguardFiles(
                 getDefaultProguardFile("proguard-android-optimize.txt"),
                 "proguard-rules.pro",
             )
         }
+    }
+
+    sourceSets {
+        // Test doubles that both the JVM and the on-device tests use.
+        getByName("test").java.srcDir("src/sharedTest/java")
+        getByName("androidTest").java.srcDir("src/sharedTest/java")
     }
 
     compileOptions {
@@ -88,22 +120,6 @@ android {
 ksp {
     arg("room.schemaLocation", "$projectDir/schemas")
 }
-
-// A release APK is meant to be handed to other people, and anything in BuildConfig
-// is recoverable from it with `strings`. Baking in a personal RunPod key would leak
-// a credential that can spend money, so refuse to build one. Debug builds may still
-// carry it for convenience; Settings is the intended path either way.
-val releaseWouldEmbedApiKey = localProperty("runpod.apiKey").isNotBlank()
-tasks.matching { it.name.startsWith("assembleRelease") || it.name.startsWith("bundleRelease") }
-    .configureEach {
-        doFirst {
-            check(!releaseWouldEmbedApiKey) {
-                "runpod.apiKey is set in local.properties and would be embedded in this " +
-                    "release artifact. Remove it and enter the key in the app's Settings " +
-                    "screen instead."
-            }
-        }
-    }
 
 dependencies {
     implementation(libs.androidx.core.ktx)

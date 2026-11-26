@@ -30,22 +30,19 @@ class OcrRepository @Inject constructor(
 ) {
 
     suspend fun recognize(
-        pages: List<PageImage>,
+        pages: PageSource,
         requested: EngineType,
-        onStage: (OcrStage) -> Unit = {},
+        onProgress: (OcrProgress) -> Unit = {},
     ): Result<RecognitionResult> {
         if (requested == EngineType.QUICK) {
-            return quickEngine.recognize(pages, onStage).map { RecognitionResult(it) }
+            return quickEngine.recognize(pages, onProgress).map { RecognitionResult(it) }
         }
 
-        val remote = documentEngine.recognize(pages, onStage)
-        remote.getOrNull()?.let { return Result.success(RecognitionResult(it)) }
+        val remote = documentEngine.recognize(pages, onProgress)
+        val error = remote.exceptionOrNull() as? BackendUnavailableException
+            ?: return remote.map { RecognitionResult(it) }
 
-        val error = remote.exceptionOrNull()
-        if (error !is BackendUnavailableException) {
-            return Result.failure(error ?: IllegalStateException("Recognition failed"))
-        }
-        return quickEngine.recognize(pages, onStage)
+        return quickEngine.recognize(pages, onProgress)
             .map { RecognitionResult(it, error.reason, error.message) }
     }
 }

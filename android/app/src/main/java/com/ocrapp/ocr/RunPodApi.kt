@@ -2,6 +2,9 @@ package com.ocrapp.ocr
 
 import kotlinx.serialization.SerialName
 import kotlinx.serialization.Serializable
+import kotlinx.serialization.json.JsonElement
+import kotlinx.serialization.json.JsonPrimitive
+import kotlinx.serialization.json.contentOrNull
 import retrofit2.http.Body
 import retrofit2.http.GET
 import retrofit2.http.Header
@@ -32,6 +35,14 @@ interface RunPodApi {
         @Header("Authorization") authorization: String,
     ): RunPodJob
 
+    /** Stops a queued or running job, so an abandoned scan stops costing GPU time. */
+    @POST("v2/{endpointId}/cancel/{jobId}")
+    suspend fun cancel(
+        @Path("endpointId") endpointId: String,
+        @Path("jobId") jobId: String,
+        @Header("Authorization") authorization: String,
+    ): RunPodJob
+
     @GET("v2/{endpointId}/health")
     suspend fun health(
         @Path("endpointId") endpointId: String,
@@ -45,38 +56,34 @@ data class RunPodRequest(
 )
 
 /**
- * Mirrors the handler signature in `backend/handler.py`.
+ * Mirrors the job shape in `backend/handler.py`: the pages, in order, as `data:` URLs.
  *
- * The `single`/`multi` split matches Unlimited-OCR's two documented configurations:
- * "gundam" (cropped 640px tiles) for one page, and "base" (flat 1024px) for the
- * long-horizon multi-page path.
+ * The worker picks the model configuration from the page count — cropped "gundam"
+ * tiles for one page, the flat multi-page path for several — so there is nothing else
+ * for the client to say.
  */
 @Serializable
 data class OcrJobInput(
-    val mode: String,
     val images: List<String>,
-    @SerialName("base_size") val baseSize: Int? = null,
-    @SerialName("image_size") val imageSize: Int? = null,
-    @SerialName("crop_mode") val cropMode: Boolean? = null,
-) {
-    companion object {
-        const val MODE_SINGLE = "single"
-        const val MODE_MULTI = "multi"
-    }
-}
+)
 
 @Serializable
 data class RunPodJob(
     val id: String? = null,
     val status: String? = null,
     val output: OcrJobOutput? = null,
-    val error: String? = null,
+    /** Usually a string, but RunPod does not promise that, so any JSON is accepted. */
+    val error: JsonElement? = null,
 ) {
     val isTerminal: Boolean
         get() = status in TERMINAL_STATUSES
 
     val isSuccess: Boolean
         get() = status == COMPLETED
+
+    /** The failure in the backend's own words, when it gave any. */
+    val errorMessage: String?
+        get() = error.asErrorMessage() ?: output?.error.asErrorMessage()
 
     companion object {
         const val IN_QUEUE = "IN_QUEUE"
@@ -94,20 +101,19 @@ data class RunPodJob(
 data class OcrJobOutput(
     val markdown: String = "",
     val pages: List<OcrJobPage> = emptyList(),
-    val model: String? = null,
-    @SerialName("elapsed_ms") val elapsedMs: Long? = null,
     /** Pages the model produced no text for, by zero-based index. */
     @SerialName("empty_pages") val emptyPages: List<Int> = emptyList(),
     /**
-     * Whether [pages] are exact boundaries or a best-effort split.
+     * Whether [pages] are exact boundaries or the whole document in one entry.
      *
-     * Under `long_context` the model emits one stream for the whole document and the
-     * backend guesses where pages divide, so a page "missing" from the list means the
-     * delimiter was not found — not that the page went unread. Defaults to the
-     * per-page value so an older backend keeps its existing, exact meaning.
+     * Under `long_context` the model emitted one stream and the worker could not tell
+     * where its pages divide, so a page "missing" from the list means the boundary was
+     * not found — not that the page went unread. Defaults to the per-page value so an
+     * older backend keeps its existing, exact meaning.
      */
     @SerialName("page_mode") val pageMode: String = PAGE_MODE_PER_PAGE,
     val warnings: List<String> = emptyList(),
+    val error: JsonElement? = null,
 ) {
     val isLongContext: Boolean get() = pageMode == PAGE_MODE_LONG_CONTEXT
 
@@ -116,6 +122,12 @@ data class OcrJobOutput(
         const val PAGE_MODE_LONG_CONTEXT = "long_context"
     }
 }
+
+private fun JsonElement?.asErrorMessage(): String? = when (this) {
+    null -> null
+    is JsonPrimitive -> contentOrNull
+    else -> toString()
+}?.takeIf { it.isNotBlank() }
 
 @Serializable
 data class OcrJobPage(

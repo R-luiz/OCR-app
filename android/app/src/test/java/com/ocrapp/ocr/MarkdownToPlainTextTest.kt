@@ -62,4 +62,12 @@ class MarkdownToPlainTextTest {
     fun `strips blockquote markers`() {
         assertEquals("quoted line", MarkdownToPlainText.convert("> quoted line"))
     }
+
+    // The worker writes a literal pipe inside a cell as `\|`; it is text, not a column.
+    @Test
+    fun `keeps an escaped pipe inside its table cell`() {
+        val markdown = "| Op | Meaning |\n| --- | --- |\n| a \\| b | either |"
+
+        assertEquals("Op\tMeaning\na | b\teither", MarkdownToPlainText.convert(markdown))
+    }
 }

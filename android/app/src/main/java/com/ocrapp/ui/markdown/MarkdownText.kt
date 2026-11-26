@@ -10,36 +10,55 @@ import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.text.AnnotatedString
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import com.ocrapp.ui.theme.MonoTextStyle
 import com.ocrapp.ui.theme.TableCellStyle
 import com.ocrapp.ui.theme.TableHeaderStyle
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.withContext
 
-/** Renders parsed Markdown. Wide tables scroll horizontally instead of squeezing text. */
+/**
+ * Renders Markdown as a scrolling list of blocks.
+ *
+ * A parsed document can run to thousands of blocks, so it is parsed off the main thread
+ * and only the blocks on screen are composed. Wide tables scroll horizontally instead
+ * of squeezing their text.
+ */
 @Composable
 fun MarkdownText(
     markdown: String,
     modifier: Modifier = Modifier,
     contentPadding: PaddingValues = PaddingValues(0.dp),
 ) {
-    val blocks = remember(markdown) { MarkdownParser.parse(markdown) }
+    var blocks by remember(markdown) { mutableStateOf(emptyList<MarkdownBlock>()) }
+    LaunchedEffect(markdown) {
+        blocks = withContext(Dispatchers.Default) { MarkdownParser.parse(markdown) }
+    }
 
-    Column(
-        modifier = modifier.padding(contentPadding),
+    LazyColumn(
+        modifier = modifier,
+        contentPadding = contentPadding,
         verticalArrangement = Arrangement.spacedBy(8.dp),
     ) {
-        blocks.forEach { block -> MarkdownBlockView(block) }
+        items(blocks) { block -> MarkdownBlockView(block) }
     }
 }
 
@@ -47,7 +66,7 @@ fun MarkdownText(
 private fun MarkdownBlockView(block: MarkdownBlock) {
     when (block) {
         is MarkdownBlock.Heading -> Text(
-            text = MarkdownInline.annotate(block.text),
+            text = rememberInline(block.text),
             style = when (block.level) {
                 1 -> MaterialTheme.typography.headlineSmall
                 2 -> MaterialTheme.typography.titleLarge
@@ -59,7 +78,7 @@ private fun MarkdownBlockView(block: MarkdownBlock) {
         )
 
         is MarkdownBlock.Paragraph -> Text(
-            text = MarkdownInline.annotate(block.text),
+            text = rememberInline(block.text),
             style = MaterialTheme.typography.bodyMedium,
         )
 
@@ -73,7 +92,7 @@ private fun MarkdownBlockView(block: MarkdownBlock) {
             )
             Spacer(Modifier.width(8.dp))
             Text(
-                text = MarkdownInline.annotate(block.text),
+                text = rememberInline(block.text),
                 style = MaterialTheme.typography.bodyMedium,
             )
         }
@@ -86,7 +105,7 @@ private fun MarkdownBlockView(block: MarkdownBlock) {
                 .padding(12.dp),
         ) {
             Text(
-                text = MarkdownInline.annotate(block.text),
+                text = rememberInline(block.text),
                 style = MaterialTheme.typography.bodyMedium,
             )
         }
@@ -133,7 +152,7 @@ private fun MarkdownTable(table: MarkdownBlock.Table) {
         ) {
             table.header.forEach { cell ->
                 Text(
-                    text = MarkdownInline.annotate(cell),
+                    text = rememberInline(cell),
                     style = TableHeaderStyle,
                     modifier = Modifier
                         .width(columnWidth)
@@ -149,10 +168,9 @@ private fun MarkdownTable(table: MarkdownBlock.Table) {
                 verticalAlignment = Alignment.Top,
             ) {
                 // Ragged rows are common in OCR output; pad short ones so columns align.
-                val cells = row + List((table.header.size - row.size).coerceAtLeast(0)) { "" }
-                cells.forEach { cell ->
+                repeat(maxOf(row.size, table.header.size)) { column ->
                     Text(
-                        text = MarkdownInline.annotate(cell),
+                        text = rememberInline(row.getOrElse(column) { "" }),
                         style = TableCellStyle,
                         modifier = Modifier
                             .width(columnWidth)
@@ -163,3 +181,8 @@ private fun MarkdownTable(table: MarkdownBlock.Table) {
         }
     }
 }
+
+/** Inline emphasis is a pass of regexes per string; done once, not on every recomposition. */
+@Composable
+private fun rememberInline(text: String): AnnotatedString =
+    remember(text) { MarkdownInline.annotate(text) }

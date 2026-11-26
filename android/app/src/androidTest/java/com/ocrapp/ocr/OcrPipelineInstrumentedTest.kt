@@ -1,13 +1,16 @@
 package com.ocrapp.ocr
 
 import android.content.Context
+import android.content.res.AssetManager
 import android.graphics.Bitmap
 import android.graphics.BitmapFactory
 import android.net.Uri
+import android.util.Base64
 import androidx.test.ext.junit.runners.AndroidJUnit4
 import androidx.test.platform.app.InstrumentationRegistry
 import kotlinx.coroutines.runBlocking
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
 import org.junit.Before
 import org.junit.Test
@@ -16,8 +19,8 @@ import java.io.File
 
 /**
  * Exercises the parts of the pipeline that only exist on a real Android runtime:
- * ML Kit's bundled recognizer and the platform PdfRenderer. Neither runs under
- * Robolectric, so before this the whole Quick scan path was unverified.
+ * ML Kit's bundled recognizer, the platform PdfRenderer and ImageDecoder. None of them
+ * runs under Robolectric.
  *
  * Assets live in `src/androidTest/assets` and are read from the *instrumentation*
  * context; the app context has no access to them.
@@ -26,7 +29,7 @@ import java.io.File
 class OcrPipelineInstrumentedTest {
 
     private lateinit var appContext: Context
-    private lateinit var testAssets: android.content.res.AssetManager
+    private lateinit var testAssets: AssetManager
 
     @Before
     fun setUp() {
@@ -37,13 +40,9 @@ class OcrPipelineInstrumentedTest {
 
     @Test
     fun mlKitReadsTextFromAScannedPage() = runBlocking {
-        val bitmap = testAssets.open(SAMPLE_PAGE).use { BitmapFactory.decodeStream(it) }
-        val engine = MlKitOcrEngine()
-
-        val output = engine.recognize(listOf(PageImage(index = 0, bitmap = bitmap))).getOrThrow()
+        val output = MlKitOcrEngine().recognize(samplePages(1)).getOrThrow()
 
         val text = output.plainText.uppercase()
-        assertTrue("recognized nothing", output.plainText.isNotBlank())
         assertTrue("missing INVOICE, got:\n${output.plainText}", text.contains("INVOICE"))
         assertTrue("missing order number, got:\n${output.plainText}", text.contains("4471"))
         assertTrue("missing total, got:\n${output.plainText}", text.contains("128"))
@@ -51,116 +50,120 @@ class OcrPipelineInstrumentedTest {
         assertEquals(EngineType.QUICK, output.engine)
         assertEquals(1, output.pageCount)
         // ML Kit has no document structure to report.
-        assertEquals(null, output.markdown)
+        assertNull(output.markdown)
     }
 
+    // The progress overlay is how a user tells the engines apart and sees a long
+    // document advance, so on-device work reports its own stage, page by page.
     @Test
-    fun mlKitReportsOnDeviceRecognitionNotRemoteParsing() = runBlocking {
-        val bitmap = testAssets.open(SAMPLE_PAGE).use { BitmapFactory.decodeStream(it) }
-        val stages = mutableListOf<OcrStage>()
+    fun mlKitReportsEachPageAsOnDeviceRecognition() = runBlocking {
+        val progress = mutableListOf<OcrProgress>()
 
-        MlKitOcrEngine()
-            .recognize(listOf(PageImage(0, bitmap)), onStage = { stages += it })
-            .getOrThrow()
+        MlKitOcrEngine().recognize(samplePages(2), onProgress = { progress += it }).getOrThrow()
 
-        // The progress overlay is how a user tells the engines apart, so the on-device
-        // path must not claim the remote path's stages.
-        assertEquals(listOf(OcrStage.RECOGNIZING), stages)
-        assertTrue("must not report remote stages", OcrStage.QUEUED !in stages)
-        assertTrue("must not report remote stages", OcrStage.RUNNING !in stages)
+        assertEquals(
+            listOf(
+                OcrProgress(OcrStage.RECOGNIZING, page = 1, pageCount = 2),
+                OcrProgress(OcrStage.RECOGNIZING, page = 2, pageCount = 2),
+            ),
+            progress,
+        )
     }
 
     @Test
     fun mlKitConcatenatesMultiplePages() = runBlocking {
-        val pages = List(2) { index ->
-            val bitmap = testAssets.open(SAMPLE_PAGE).use { BitmapFactory.decodeStream(it) }
-            PageImage(index = index, bitmap = bitmap)
-        }
-
-        val output = MlKitOcrEngine().recognize(pages).getOrThrow()
+        val output = MlKitOcrEngine().recognize(samplePages(2)).getOrThrow()
 
         assertEquals(2, output.pageCount)
         // Same page twice, so the marker must appear once per page.
         assertEquals(2, Regex("INVOICE", RegexOption.IGNORE_CASE).findAll(output.plainText).count())
+        assertEquals(emptyList<Int>(), output.emptyPageNumbers)
     }
 
+    // A blank page among others must be named: the text reads as complete without it.
     @Test
-    fun pdfImportRendersEveryPageUpright() = runBlocking {
-        val pdf = copyAssetToCache(SAMPLE_PDF)
-        val loader = PageLoader(appContext)
+    fun mlKitNamesAPageWithNoText() = runBlocking {
+        val pages = FakePageSource(2) { index ->
+            if (index == 0) samplePage() else blankPage()
+        }
 
-        val pages = loader.load(listOf(Uri.fromFile(pdf))).getOrThrow().pages
+        val output = MlKitOcrEngine().recognize(pages).getOrThrow()
 
-        assertEquals("expected both PDF pages", 2, pages.size)
-        assertEquals(listOf(0, 1), pages.map { it.index })
-        pages.forEach { page ->
-            assertTrue("page ${page.index} is empty", page.bitmap.width > 0 && page.bitmap.height > 0)
-            assertTrue(
-                "page ${page.index} long edge ${maxOf(page.bitmap.width, page.bitmap.height)}",
-                maxOf(page.bitmap.width, page.bitmap.height) <= 1600,
-            )
+        assertEquals(listOf(2), output.emptyPageNumbers)
+        assertTrue(output.plainText.uppercase().contains("INVOICE"))
+    }
+
+    // A PDF page is 595 x 842 points. Rendered at that size (72 dpi) small print is
+    // unreadable, so the loader scales vector pages up to exactly the edge asked for.
+    @Test
+    fun pdfPagesRenderAtTheRequestedResolution() = runBlocking {
+        openSamplePdf().pages.use { pages ->
+            assertEquals("expected both PDF pages", 2, pages.pageCount)
+
+            for (index in 0 until pages.pageCount) {
+                pages.usePage(index, 2048) { large ->
+                    assertEquals(2048, maxOf(large.width, large.height))
+                }
+                pages.usePage(index, 256) { small ->
+                    assertEquals(256, maxOf(small.width, small.height))
+                }
+            }
         }
     }
 
     @Test
     fun pdfPagesAreCompositedOntoWhiteSoOcrCanReadThem() = runBlocking {
-        val pdf = copyAssetToCache(SAMPLE_PDF)
-        val pages = PageLoader(appContext).load(listOf(Uri.fromFile(pdf))).getOrThrow().pages
+        val loaded = openSamplePdf()
+        assertEquals("nothing should be dropped for a 2-page PDF", 0, loaded.droppedPages)
 
         // PdfRenderer draws onto a transparent bitmap; without the explicit white fill
         // the JPEG encoder flattens it to black and OCR sees nothing at all.
-        val output = MlKitOcrEngine().recognize(pages).getOrThrow()
+        val output = loaded.pages.use { MlKitOcrEngine().recognize(it).getOrThrow() }
         val text = output.plainText.uppercase()
 
         assertTrue("no text from PDF, got:\n${output.plainText}", text.contains("INVOICE"))
         assertTrue("second page missing, got:\n${output.plainText}", text.contains("APPENDIX"))
     }
 
+    // A photo holds no more detail than its pixels: it is shrunk to fit, never enlarged.
     @Test
-    fun normalizerProducesADecodableJpegDataUrl() {
-        val bitmap = testAssets.open(SAMPLE_PAGE).use { BitmapFactory.decodeStream(it) }
+    fun imagesAreShrunkToFitButNeverEnlarged() = runBlocking {
+        val image = copyAssetToCache(SAMPLE_PAGE)
+        val original = samplePage()
+        val originalEdge = maxOf(original.width, original.height)
 
-        val dataUrl = ImageNormalizer().toDataUrl(bitmap)
+        PageLoader(appContext).open(listOf(Uri.fromFile(image))).getOrThrow().pages.use { pages ->
+            assertEquals(1, pages.pageCount)
+            pages.usePage(0, originalEdge / 2) { half ->
+                assertEquals(originalEdge / 2, maxOf(half.width, half.height))
+            }
+            pages.usePage(0, originalEdge * 4) { full ->
+                assertEquals(originalEdge, maxOf(full.width, full.height))
+            }
+        }
+    }
+
+    @Test
+    fun pagesEncodeToADecodableJpegDataUrl() {
+        val dataUrl = samplePage().toJpegDataUrl()
 
         assertTrue(dataUrl.startsWith("data:image/jpeg;base64,"))
-        val payload = dataUrl.substringAfter(",")
-        val bytes = android.util.Base64.decode(payload, android.util.Base64.NO_WRAP)
+        val bytes = Base64.decode(dataUrl.substringAfter(","), Base64.NO_WRAP)
         val decoded: Bitmap? = BitmapFactory.decodeByteArray(bytes, 0, bytes.size)
 
         assertTrue("payload did not decode as an image", decoded != null)
-        assertTrue(
-            "long edge ${maxOf(decoded!!.width, decoded.height)} exceeds the model's 1024px input",
-            maxOf(decoded.width, decoded.height) <= 1024,
-        )
     }
 
-    // A long PDF used to sit behind an unqualified spinner for minutes with no way to
-    // tell progress from a hang, so the loader now reports which page it is on.
-    @Test
-    fun pdfImportReportsPerPageProgress() = runBlocking {
-        val pdf = copyAssetToCache(SAMPLE_PDF)
-        val seen = mutableListOf<Pair<Int, Int>>()
+    private fun samplePages(count: Int) = FakePageSource(count) { samplePage() }
 
-        val loaded = PageLoader(appContext)
-            .load(listOf(Uri.fromFile(pdf))) { done, total -> seen += done to total }
-            .getOrThrow()
+    private fun samplePage(): Bitmap =
+        testAssets.open(SAMPLE_PAGE).use { BitmapFactory.decodeStream(it) }
 
-        assertEquals("nothing should be dropped for a 2-page PDF", 0, loaded.droppedPages)
-        assertTrue("expected progress callbacks, got none", seen.isNotEmpty())
-        assertTrue(
-            "every callback must report the real total, got $seen",
-            seen.all { (_, total) -> total == loaded.pages.size },
-        )
-        assertEquals(
-            "progress must end on the final page",
-            loaded.pages.size,
-            seen.last().first,
-        )
-        assertTrue(
-            "progress must not run backwards, got $seen",
-            seen.map { it.first }.zipWithNext().all { (a, b) -> b >= a },
-        )
-    }
+    private fun blankPage(): Bitmap =
+        Bitmap.createBitmap(600, 800, Bitmap.Config.ARGB_8888).apply { eraseColor(android.graphics.Color.WHITE) }
+
+    private suspend fun openSamplePdf(): LoadedPages =
+        PageLoader(appContext).open(listOf(Uri.fromFile(copyAssetToCache(SAMPLE_PDF)))).getOrThrow()
 
     private fun copyAssetToCache(name: String): File {
         val target = File(appContext.cacheDir, name)

@@ -2,7 +2,6 @@ package com.ocrapp.data
 
 import android.content.Context
 import android.graphics.Bitmap
-import com.ocrapp.ocr.ImageNormalizer
 import dagger.hilt.android.qualifiers.ApplicationContext
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
@@ -18,22 +17,22 @@ import javax.inject.Singleton
 @Singleton
 class ThumbnailStore @Inject constructor(
     @ApplicationContext private val context: Context,
-    private val normalizer: ImageNormalizer,
 ) {
 
     private val directory: File
         get() = File(context.filesDir, DIRECTORY).apply { mkdirs() }
 
+    /** Writes [bitmap], already sized to [EDGE_PX], and returns the file's path. */
     suspend fun save(bitmap: Bitmap): String? = withContext(Dispatchers.IO) {
-        runCatching {
-            val scaled = normalizer.scaleToMaxEdge(bitmap, ImageNormalizer.THUMBNAIL_EDGE_PX)
-            val file = File(directory, "${UUID.randomUUID()}.jpg")
-            file.outputStream().use { out ->
-                scaled.compress(Bitmap.CompressFormat.JPEG, THUMBNAIL_QUALITY, out)
-            }
-            if (scaled !== bitmap) scaled.recycle()
-            file.absolutePath
-        }.getOrNull()
+        val file = File(directory, "${UUID.randomUUID()}.jpg")
+        val saved = runCatching {
+            file.outputStream().use { out -> bitmap.compress(Bitmap.CompressFormat.JPEG, QUALITY, out) }
+        }.getOrDefault(false)
+        if (!saved) {
+            file.delete()
+            return@withContext null
+        }
+        file.absolutePath
     }
 
     suspend fun delete(path: String?) = withContext(Dispatchers.IO) {
@@ -42,8 +41,11 @@ class ThumbnailStore @Inject constructor(
         Unit
     }
 
-    private companion object {
-        const val DIRECTORY = "thumbs"
-        const val THUMBNAIL_QUALITY = 80
+    companion object {
+        /** Long edge of a history thumbnail. */
+        const val EDGE_PX = 256
+
+        private const val DIRECTORY = "thumbs"
+        private const val QUALITY = 80
     }
 }

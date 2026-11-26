@@ -4,7 +4,7 @@ on:
   workflow_dispatch:
     inputs:
       tag:
-        description: "Release tag, e.g. v0.1.0"
+        description: "Release tag matching versionName, e.g. v0.3.0"
         type: string
         required: true
 
@@ -14,9 +14,20 @@ permissions:
 jobs:
   release:
     runs-on: ubuntu-latest
+    env:
+      RELEASE_TAG: ${{ inputs.tag }}
 
     steps:
       - uses: actions/checkout@v4
+
+      - name: Check version
+        shell: bash
+        run: |
+          version=$(sed -n 's/^[[:space:]]*versionName = "\([^"]*\)"$/\1/p' android/app/build.gradle.kts)
+          if [[ ! "$version" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ || "$RELEASE_TAG" != "v$version" ]]; then
+            echo "::error::Release tag must match versionName (v$version)."
+            exit 1
+          fi
 
       - name: Set up JDK 17
         uses: actions/setup-java@v4
@@ -31,46 +42,44 @@ jobs:
         run: ./gradlew testDebugUnitTest
         working-directory: android
 
-      - name: Build APK
-        run: ./gradlew assembleDebug
+      - name: Build signed release APK
         working-directory: android
+        shell: bash
+        env:
+          OCR_KEYSTORE_BASE64: ${{ secrets.OCR_KEYSTORE_BASE64 }}
+          OCR_KEYSTORE_PASSWORD: ${{ secrets.OCR_KEYSTORE_PASSWORD }}
+          OCR_KEY_ALIAS: ${{ secrets.OCR_KEY_ALIAS }}
+          OCR_KEY_PASSWORD: ${{ secrets.OCR_KEY_PASSWORD }}
+        run: |
+          : "${OCR_KEYSTORE_BASE64:?Missing release keystore}"
+          : "${OCR_KEYSTORE_PASSWORD:?Missing release keystore password}"
+          : "${OCR_KEY_ALIAS:?Missing release key alias}"
+          : "${OCR_KEY_PASSWORD:?Missing release key password}"
+          OCR_KEYSTORE_FILE=$(mktemp "$RUNNER_TEMP/ocr-keystore.XXXXXX")
+          export OCR_KEYSTORE_FILE
+          trap 'rm -f -- "$OCR_KEYSTORE_FILE"' EXIT
+          printf '%s' "$OCR_KEYSTORE_BASE64" | base64 --decode > "$OCR_KEYSTORE_FILE"
+          ./gradlew assembleRelease
 
-      - name: Rename artifact
+      - name: Stage APK
         run: |
           mkdir -p dist
-          cp android/app/build/outputs/apk/debug/app-debug.apk \
-             "dist/ocr-app-${{ inputs.tag }}.apk"
-          ls -la dist
-
-      # Proves the shipped binary carries no RunPod credentials. CI has no
-      # local.properties, so BuildConfig should hold empty strings — this asserts it
-      # rather than assuming it.
-      - name: Verify no credentials in the APK
-        run: |
-          if strings "dist/ocr-app-${{ inputs.tag }}.apk" | grep -qE '\brpa_[A-Za-z0-9]{16,}'; then
-            echo "::error::A RunPod API key appears to be embedded in the APK."
-            exit 1
-          fi
-          echo "No RunPod key pattern found in the APK."
+          cp android/app/build/outputs/apk/release/app-release.apk "dist/ocr-app-$RELEASE_TAG.apk"
 
       - name: Publish release
         uses: softprops/action-gh-release@v2
         with:
           tag_name: ${{ inputs.tag }}
+          target_commitish: ${{ github.sha }}
           name: OCR App ${{ inputs.tag }}
           files: dist/*.apk
           generate_release_notes: true
           body: |
-            Sideloadable Android APK.
+            Signed Android release APK for ARM devices (Android 9+). Android cannot
+            update a debug-signed installation with this APK.
 
-            **This is a debug-signed build.** It installs directly on a device with
-            "install from unknown sources" enabled, but it is signed with the standard
-            Android debug key and is marked debuggable — fine for trying the app, not
-            appropriate for public distribution. Producing a properly signed release
-            build needs a keystore, which is deliberately not committed to this repo.
-
-            No RunPod credentials are embedded; the build asserts this. Enter your
-            endpoint ID and API key under **Settings** in the app.
+            Enter your RunPod endpoint ID and API key in **Settings**. Release APKs
+            do not contain either value.
 
             Quick scan works offline with no configuration. Document parsing needs a
             RunPod endpoint — see the README.

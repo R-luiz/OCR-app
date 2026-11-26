@@ -29,7 +29,9 @@ object AppModule {
     @Provides
     @Singleton
     fun provideDatabase(@ApplicationContext context: Context): OcrDatabase =
-        Room.databaseBuilder(context, OcrDatabase::class.java, OcrDatabase.NAME).build()
+        Room.databaseBuilder(context, OcrDatabase::class.java, OcrDatabase.NAME)
+            .addMigrations(OcrDatabase.MIGRATION_1_2)
+            .build()
 
     @Provides
     fun provideScanDao(database: OcrDatabase): ScanDao = database.scanDao()
@@ -48,8 +50,9 @@ object AppModule {
     @Provides
     @Singleton
     fun provideOkHttpClient(): OkHttpClient = OkHttpClient.Builder()
-        // Generous read timeout: a single request carries every page of a document, and
-        // a cold RunPod worker has to load the model before it answers at all.
+        // Resubmitting a POST on a connection error can create a second billable job.
+        // Status polling handles transient errors explicitly.
+        .retryOnConnectionFailure(false)
         .connectTimeout(30, TimeUnit.SECONDS)
         .writeTimeout(2, TimeUnit.MINUTES)
         .readTimeout(2, TimeUnit.MINUTES)

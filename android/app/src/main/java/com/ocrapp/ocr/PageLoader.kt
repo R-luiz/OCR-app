@@ -2,35 +2,35 @@ package com.ocrapp.ocr
 
 import android.content.Context
 import android.graphics.Bitmap
-import android.graphics.Canvas
 import android.graphics.Color
 import android.graphics.ImageDecoder
 import android.graphics.Matrix
 import android.graphics.pdf.PdfRenderer
 import android.net.Uri
-import android.os.ParcelFileDescriptor
 import dagger.hilt.android.qualifiers.ApplicationContext
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.currentCoroutineContext
+import kotlinx.coroutines.ensureActive
 import kotlinx.coroutines.withContext
-import java.io.File
+import java.io.FileNotFoundException
 import javax.inject.Inject
 import javax.inject.Singleton
 import kotlin.math.roundToInt
 
 /**
- * Pages ready for OCR, plus how many the import refused to take on.
+ * An opened document, plus how many pages the import refused to take on.
  *
  * [droppedPages] is non-zero only when the input exceeded the page ceiling; the UI
  * says so rather than silently scanning part of a document.
  */
-data class LoadedPages(
-    val pages: List<PageImage>,
+class LoadedPages(
+    val pages: PageSource,
     val droppedPages: Int = 0,
 )
 
 /**
- * Turns the app's three input sources — camera capture, picked images, and PDFs — into
- * the single [PageImage] list that every [OcrEngine] consumes.
+ * Turns the app's three input sources — camera captures, picked images, and PDFs — into
+ * the single [PageSource] that every [OcrEngine] consumes.
  */
 @Singleton
 class PageLoader @Inject constructor(
@@ -38,49 +38,41 @@ class PageLoader @Inject constructor(
 ) {
 
     /**
-     * Decodes picked images and/or PDFs, in the order given, into a flat page list.
+     * Opens images and/or PDFs, in the order given, as one document.
      *
-     * [onProgress] reports `(pagesDone, pagesTotal)` as rasterizing proceeds. A long PDF
-     * takes real time to render — this is what lets the UI say which page it is on
-     * instead of showing an unqualified spinner for minutes.
+     * Only page counts are read here; pixels are produced later, a page at a time, by
+     * [PageSource.render]. The caller closes the returned source.
      */
-    suspend fun load(
-        uris: List<Uri>,
-        onProgress: (done: Int, total: Int) -> Unit = { _, _ -> },
-    ): Result<LoadedPages> =
-        withContext(Dispatchers.IO) {
-            runCatching {
-                val requested = uris.sumOf { pageCount(it) }
-                val total = minOf(requested, MAX_PAGES)
-                onProgress(0, total)
-
-                val pages = buildList {
-                    for (uri in uris) {
-                        if (size >= MAX_PAGES) break
-                        if (isPdf(uri)) {
-                            addAll(renderPdf(uri, startIndex = size, total = total, onProgress = onProgress))
-                        } else {
-                            add(PageImage(index = size, bitmap = decodeImage(uri)))
-                            onProgress(size, total)
-                        }
+    suspend fun open(uris: List<Uri>): Result<LoadedPages> = runCatchingCancellable {
+        val renderers = mutableListOf<PdfRenderer>()
+        try {
+            withContext(Dispatchers.IO) {
+                val refs = mutableListOf<PageRef>()
+                var requested = 0
+                for (uri in uris) {
+                    ensureActive()
+                    if (!isPdf(uri)) {
+                        requested++
+                        if (refs.size < MAX_PAGES) refs += PageRef.Image(uri)
+                        continue
                     }
+                    val renderer = openPdf(uri)
+                    requested += renderer.pageCount
+                    val taken = minOf(renderer.pageCount, MAX_PAGES - refs.size)
+                    if (taken == 0) {
+                        renderer.close()
+                        continue
+                    }
+                    renderers += renderer
+                    repeat(taken) { number -> refs += PageRef.PdfPage(renderer, number) }
                 }
-                LoadedPages(pages = pages, droppedPages = requested - pages.size)
+                LoadedPages(UriPageSource(refs, renderers), droppedPages = requested - refs.size)
             }
+        } catch (error: Throwable) {
+            // Cancellation can also happen on the dispatcher handoff, after opening.
+            closeRenderers(renderers)
+            throw error
         }
-
-    /** Decodes a file written by CameraX. */
-    suspend fun loadCapture(file: File): Result<LoadedPages> =
-        load(listOf(Uri.fromFile(file)))
-
-    /** Page count without rasterizing anything — cheap enough to run before the work. */
-    private fun pageCount(uri: Uri): Int {
-        if (!isPdf(uri)) return 1
-        return runCatching {
-            context.contentResolver.openFileDescriptor(uri, "r")?.use { fd ->
-                PdfRenderer(fd).use { it.pageCount }
-            }
-        }.getOrNull() ?: 1
     }
 
     private fun isPdf(uri: Uri): Boolean {
@@ -88,7 +80,19 @@ class PageLoader @Inject constructor(
         return uri.lastPathSegment?.endsWith(".pdf", ignoreCase = true) == true
     }
 
-    private fun decodeImage(uri: Uri): Bitmap {
+    private fun openPdf(uri: Uri): PdfRenderer {
+        val descriptor = context.contentResolver.openFileDescriptor(uri, "r")
+            ?: throw FileNotFoundException("Could not open PDF $uri")
+        return try {
+            // The renderer owns the descriptor from here on and closes it itself.
+            PdfRenderer(descriptor)
+        } catch (error: Throwable) {
+            runCatching { descriptor.close() }
+            throw error
+        }
+    }
+
+    private fun decodeImage(uri: Uri, maxEdge: Int): Bitmap {
         val source = ImageDecoder.createSource(context.contentResolver, uri)
         return ImageDecoder.decodeBitmap(source) { decoder, info, _ ->
             // ML Kit and Bitmap.compress both need CPU-readable pixels, so the
@@ -96,75 +100,93 @@ class PageLoader @Inject constructor(
             decoder.allocator = ImageDecoder.ALLOCATOR_SOFTWARE
             decoder.isMutableRequired = false
 
-            val longEdge = maxOf(info.size.width, info.size.height)
-            if (longEdge > CAPTURE_EDGE_PX) {
-                val ratio = CAPTURE_EDGE_PX.toDouble() / longEdge
-                decoder.setTargetSize(
-                    (info.size.width * ratio).roundToInt().coerceAtLeast(1),
-                    (info.size.height * ratio).roundToInt().coerceAtLeast(1),
-                )
-            }
+            // A photo holds no more detail than its pixels, so it is only ever shrunk.
+            val (width, height) = fitSize(info.size.width, info.size.height, maxEdge, upscale = false)
+            decoder.setTargetSize(width, height)
         }
     }
 
-    private fun renderPdf(
-        uri: Uri,
-        startIndex: Int,
-        total: Int,
-        onProgress: (Int, Int) -> Unit,
-    ): List<PageImage> {
-        val descriptor: ParcelFileDescriptor = context.contentResolver
-            .openFileDescriptor(uri, "r")
-            ?: error("Could not open PDF $uri")
+    private fun renderPdfPage(renderer: PdfRenderer, number: Int, maxEdge: Int): Bitmap =
+        renderer.openPage(number).use { page ->
+            // A PDF page is measured in points (1/72 inch), not pixels: an A4 page is
+            // 595 x 842 of them. Rendering it at that size gives 72 dpi, where body text
+            // is a handful of pixels tall and OCR struggles — so it is scaled up to the
+            // requested edge, which for vector content is real resolution.
+            val (width, height) = fitSize(page.width, page.height, maxEdge, upscale = true)
 
-        return descriptor.use { fd ->
-            PdfRenderer(fd).use { renderer ->
-                val available = minOf(renderer.pageCount, MAX_PAGES - startIndex)
-                (0 until available).map { pageNumber ->
-                    renderer.openPage(pageNumber).use { page ->
-                        PageImage(
-                            index = startIndex + pageNumber,
-                            bitmap = renderPage(page),
-                        ).also { onProgress(startIndex + pageNumber + 1, total) }
-                    }
+            val bitmap = Bitmap.createBitmap(width, height, Bitmap.Config.ARGB_8888)
+            try {
+                bitmap.eraseColor(Color.WHITE)
+                val transform = Matrix().apply {
+                    setScale(width.toFloat() / page.width, height.toFloat() / page.height)
                 }
+                page.render(bitmap, null, transform, PdfRenderer.Page.RENDER_MODE_FOR_DISPLAY)
+                bitmap
+            } catch (error: Throwable) {
+                bitmap.recycle()
+                throw error
             }
         }
+
+    private sealed interface PageRef {
+        data class Image(val uri: Uri) : PageRef
+
+        class PdfPage(val renderer: PdfRenderer, val number: Int) : PageRef
     }
 
-    private fun renderPage(page: PdfRenderer.Page): Bitmap {
-        val longEdge = maxOf(page.width, page.height)
-        val scale = (CAPTURE_EDGE_PX.toDouble() / longEdge).coerceAtMost(1.0)
-        val width = (page.width * scale).roundToInt().coerceAtLeast(1)
-        val height = (page.height * scale).roundToInt().coerceAtLeast(1)
+    private inner class UriPageSource(
+        private val refs: List<PageRef>,
+        private val renderers: List<PdfRenderer>,
+    ) : PageSource {
 
-        val bitmap = Bitmap.createBitmap(width, height, Bitmap.Config.ARGB_8888)
-        // PdfRenderer composites onto a transparent bitmap; without an explicit white
-        // fill, JPEG encoding flattens the transparency to black and OCR sees nothing.
-        Canvas(bitmap).drawColor(Color.WHITE)
+        override val pageCount: Int get() = refs.size
 
-        val transform = Matrix().apply { setScale(scale.toFloat(), scale.toFloat()) }
-        page.render(bitmap, null, transform, PdfRenderer.Page.RENDER_MODE_FOR_DISPLAY)
-        return bitmap
+        override suspend fun render(index: Int, maxEdge: Int): Bitmap {
+            var allocated: Bitmap? = null
+            try {
+                currentCoroutineContext().ensureActive()
+                return withContext(Dispatchers.IO) {
+                    when (val ref = refs[index]) {
+                        is PageRef.Image -> decodeImage(ref.uri, maxEdge)
+                        is PageRef.PdfPage -> renderPdfPage(ref.renderer, ref.number, maxEdge)
+                    }.also { allocated = it }
+                }
+            } catch (error: Throwable) {
+                allocated?.recycle()
+                throw error
+            }
+        }
+
+        override fun close() = closeRenderers(renderers)
     }
 
-    private companion object {
-        const val MIME_PDF = "application/pdf"
+    private fun closeRenderers(renderers: List<PdfRenderer>) {
+        renderers.forEach { renderer -> runCatching { renderer.close() } }
+    }
+
+    companion object {
+        private const val MIME_PDF = "application/pdf"
 
         /**
-         * Hard ceiling on pages per scan. Every page is rasterized up front and held in
-         * memory at once, and at [CAPTURE_EDGE_PX] an A4 page is ~7 MB of ARGB_8888 — so
-         * 40 pages is already ~280 MB, enough to push a mid-range device into GC thrash
-         * or an OOM before OCR starts. 64 also matches the backend's own MAX_PAGES, so a
-         * request that gets this far is one the worker will accept.
+         * Ceiling on pages per scan. Memory is no longer what sets it — pages are
+         * rendered one at a time — but a scan still costs time on-device and GPU
+         * seconds remotely for every page, so an accidental 400-page import is refused
+         * rather than left to run.
          */
         const val MAX_PAGES = 64
-
-        /**
-         * Decode/render target. Larger than the 1024px the model wants, because ML Kit
-         * reads small print better at this size; [ImageNormalizer] downscales again on
-         * the upload path.
-         */
-        const val CAPTURE_EDGE_PX = 1600
     }
+}
+
+/**
+ * The size [width] x [height] takes when its longer edge is fitted to [maxEdge],
+ * preserving aspect ratio. Sources already within [maxEdge] keep their size unless
+ * [upscale] is set.
+ */
+internal fun fitSize(width: Int, height: Int, maxEdge: Int, upscale: Boolean): Pair<Int, Int> {
+    val longEdge = maxOf(width, height)
+    if (longEdge <= 0 || (longEdge <= maxEdge && !upscale)) return width to height
+
+    val ratio = maxEdge.toDouble() / longEdge
+    return (width * ratio).roundToInt().coerceAtLeast(1) to
+        (height * ratio).roundToInt().coerceAtLeast(1)
 }

@@ -35,10 +35,18 @@ class QrImageStore @Inject constructor(
         }.getOrDefault(false)
     }
 
-    /** Writes [bitmap] to app cache and returns a FileProvider content Uri for sharing. */
+    /**
+     * Writes [bitmap] to app cache and returns a FileProvider content Uri for sharing.
+     *
+     * Images staged for earlier shares are cleared on the way, once old enough that no
+     * receiving app can still be reading them — nothing else ever removes them.
+     */
     suspend fun cacheForSharing(bitmap: Bitmap): Uri? = withContext(Dispatchers.IO) {
         runCatching {
             val dir = File(context.cacheDir, "qrcodes").apply { mkdirs() }
+            val staleBefore = System.currentTimeMillis() - SHARED_IMAGE_LIFETIME_MS
+            dir.listFiles()?.forEach { if (it.lastModified() < staleBefore) it.delete() }
+
             val file = File(dir, "qr_${UUID.randomUUID()}.png")
             file.outputStream().use { out -> bitmap.compress(Bitmap.CompressFormat.PNG, 100, out) }
             FileProvider.getUriForFile(context, "${context.packageName}.fileprovider", file)
@@ -76,5 +84,9 @@ class QrImageStore @Inject constructor(
             MediaScannerConnection.scanFile(context, arrayOf(file.absolutePath), arrayOf("image/png"), null)
         }
         return compressed
+    }
+
+    private companion object {
+        const val SHARED_IMAGE_LIFETIME_MS = 60 * 60 * 1000L
     }
 }

@@ -29,7 +29,7 @@ jobs:
         run: pip install pillow pytest runpod
 
       - name: Unit tests
-        run: python -m pytest test_handler.py -q
+        run: python -m pytest test_handler.py test_postprocess.py test_deploy_runpod.py -q
         working-directory: backend
 
       # Catches syntax errors and bad imports in the scripts that have no test

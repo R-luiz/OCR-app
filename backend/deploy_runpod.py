@@ -184,9 +184,9 @@ def smoke_test(
     """Submit real pages and wait for markdown — the proof that inference works.
 
     ``pages`` above 1 repeats the image to exercise the multi-page path, which is a
-    genuinely different branch: a different prompt, image_size 1024, crop_mode off,
-    and a much larger request body. Testing only a single page left that path
-    unverified while the app used it for every PDF.
+    genuinely different branch: one long-context generate() call per window of pages,
+    a different prompt, and a much larger request body. Testing only a single page left
+    that path unverified while the app used it for every PDF.
     """
     import urllib.error
     import urllib.request
@@ -196,15 +196,9 @@ def smoke_test(
         encoded = base64.b64encode(handle.read()).decode()
 
     data_url = f"data:{mime};base64,{encoded}"
-    mode = "single" if pages == 1 else "multi"
-    payload = {
-        "input": {
-            "mode": mode,
-            "images": [data_url] * pages,
-        },
-    }
+    payload = {"input": {"images": [data_url] * pages}}
     body_mb = len(json.dumps(payload)) / (1024 * 1024)
-    print(f"mode={mode}, pages={pages}, request body ~{body_mb:.1f} MB")
+    print(f"pages={pages}, request body ~{body_mb:.1f} MB")
     base = f"https://api.runpod.ai/v2/{endpoint_id}"
     headers = {"Content-Type": "application/json", "Authorization": f"Bearer {api_key}"}
 
@@ -262,9 +256,8 @@ def smoke_test(
         print(f"FAIL: empty markdown: {json.dumps(job)[:600]}", file=sys.stderr)
         return 1
 
-    # Non-empty markdown is not enough. Each page is parsed separately now, and a page
-    # that came back blank is dropped from the joined text — leaving output that still
-    # reads like a plausible document while silently missing a page. Check the count.
+    # A plausible document can still be missing a page. Verify the exact response
+    # indexes and non-blank text, not just the length of the joined Markdown.
     returned = output.get("pages") or []
     blank = [page.get("index") for page in returned if not str(page.get("markdown", "")).strip()]
     page_mode = output.get("page_mode", "per_page")
@@ -273,17 +266,10 @@ def smoke_test(
     for warning in output.get("warnings") or []:
         print(f"  warning: {warning}")
 
-    # Long-context output is one stream for the whole document, so the backend's page
-    # split is a guess and a short list means no delimiter was found, not lost text.
-    # Holding it to a per-page count would fail runs that parsed the document fine.
-    if page_mode == "long_context":
-        print(f"OK — {len(markdown)} chars of markdown, parsed in one long-context pass\n")
-        print(markdown[:2000])
-        return 0
-
-    if len(returned) != pages:
+    indexes = [page.get("index") for page in returned]
+    if indexes != list(range(pages)):
         print(
-            f"FAIL: sent {pages} pages but the response describes {len(returned)}",
+            f"FAIL: expected page indexes 0–{pages - 1}, got {indexes}",
             file=sys.stderr,
         )
         return 1
@@ -648,8 +634,7 @@ def main() -> int:
         return 1
 
     print(f"\nendpoint id: {endpoint_id}")
-    print("Put this and your API key into the app under Settings, or into")
-    print("android/local.properties as runpod.endpointId / runpod.apiKey.")
+    print("Enter this ID and your API key in the app under Settings.")
 
     if args.smoke_test:
         return smoke_test(

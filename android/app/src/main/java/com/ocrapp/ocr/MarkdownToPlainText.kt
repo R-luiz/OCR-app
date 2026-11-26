@@ -22,6 +22,9 @@ object MarkdownToPlainText {
     private val STRIKETHROUGH = Regex("~~(.+?)~~")
     private val BLANK_RUN = Regex("\n{3,}")
 
+    /** A cell boundary: a pipe the worker did not escape as `\|` inside a cell. */
+    private val CELL_SEPARATOR = Regex("(?<!\\\\)\\|")
+
     fun convert(markdown: String): String {
         if (markdown.isBlank()) return ""
 
@@ -51,8 +54,8 @@ object MarkdownToPlainText {
                 line = line.trim()
                     .removePrefix("|")
                     .removeSuffix("|")
-                    .split('|')
-                    .joinToString("\t") { it.trim() }
+                    .split(CELL_SEPARATOR)
+                    .joinToString("\t") { it.trim().replace("\\|", "|") }
             }
 
             line = line

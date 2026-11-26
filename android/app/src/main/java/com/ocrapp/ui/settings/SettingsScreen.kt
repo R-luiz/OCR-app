@@ -7,7 +7,9 @@ import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.imePadding
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.text.KeyboardOptions
@@ -51,12 +53,12 @@ fun SettingsScreen(
 ) {
     val state by viewModel.state.collectAsStateWithLifecycle()
     val snackbarHostState = remember { SnackbarHostState() }
-    val savedMessage = stringResource(R.string.settings_saved)
-
-    LaunchedEffect(state.isSaved) {
-        if (state.isSaved) {
-            snackbarHostState.showSnackbar(savedMessage)
-            viewModel.onSavedMessageShown()
+    val messageRes = state.messageRes
+    if (messageRes != null) {
+        val message = stringResource(messageRes)
+        LaunchedEffect(messageRes) {
+            snackbarHostState.showSnackbar(message)
+            viewModel.onMessageShown(messageRes)
         }
     }
 
@@ -66,7 +68,10 @@ fun SettingsScreen(
                 title = { Text(stringResource(R.string.settings_title)) },
                 navigationIcon = {
                     IconButton(onClick = onBack) {
-                        Icon(Icons.AutoMirrored.Filled.ArrowBack, contentDescription = null)
+                        Icon(
+                            Icons.AutoMirrored.Filled.ArrowBack,
+                            stringResource(R.string.action_back),
+                        )
                     }
                 },
             )
@@ -77,6 +82,7 @@ fun SettingsScreen(
             modifier = Modifier
                 .fillMaxSize()
                 .padding(padding)
+                .imePadding()
                 .verticalScroll(rememberScrollState())
                 .padding(16.dp),
             verticalArrangement = Arrangement.spacedBy(12.dp),
@@ -94,15 +100,20 @@ fun SettingsScreen(
             OutlinedTextField(
                 value = state.endpointId,
                 onValueChange = viewModel::onEndpointChange,
+                enabled = state.canEdit,
                 label = { Text(stringResource(R.string.settings_endpoint_id)) },
                 singleLine = true,
                 modifier = Modifier.fillMaxWidth(),
-                keyboardOptions = KeyboardOptions(imeAction = ImeAction.Next),
+                keyboardOptions = KeyboardOptions(
+                    autoCorrectEnabled = false,
+                    imeAction = ImeAction.Next,
+                ),
             )
 
             OutlinedTextField(
                 value = state.apiKey,
                 onValueChange = viewModel::onApiKeyChange,
+                enabled = state.canEdit,
                 label = { Text(stringResource(R.string.settings_api_key)) },
                 singleLine = true,
                 modifier = Modifier.fillMaxWidth(),
@@ -114,34 +125,20 @@ fun SettingsScreen(
             )
 
             Row(verticalAlignment = Alignment.CenterVertically) {
-                Button(onClick = viewModel::save) {
-                    Text(stringResource(R.string.result_save))
+                Button(onClick = viewModel::save, enabled = state.canEdit) {
+                    Text(stringResource(R.string.action_save))
                 }
                 Spacer(Modifier.width(12.dp))
                 OutlinedButton(onClick = viewModel::testConnection, enabled = state.canTest) {
                     Text(stringResource(R.string.settings_test))
                 }
-                if (state.connection == ConnectionState.TESTING) {
+                if (state.connection == ConnectionState.Testing) {
                     Spacer(Modifier.width(12.dp))
-                    CircularProgressIndicator(modifier = Modifier.width(20.dp))
+                    CircularProgressIndicator(modifier = Modifier.size(20.dp), strokeWidth = 2.dp)
                 }
             }
 
-            when (state.connection) {
-                ConnectionState.REACHABLE -> ConnectionMessage(
-                    text = listOfNotNull("Endpoint reachable", state.connectionDetail)
-                        .joinToString(" — "),
-                    isError = false,
-                )
-
-                ConnectionState.UNREACHABLE -> ConnectionMessage(
-                    text = listOfNotNull("Could not reach endpoint", state.connectionDetail)
-                        .joinToString(": "),
-                    isError = true,
-                )
-
-                ConnectionState.UNKNOWN, ConnectionState.TESTING -> Unit
-            }
+            ConnectionMessage(state.connection)
 
             Spacer(Modifier.height(8.dp))
             Text(
@@ -154,14 +151,33 @@ fun SettingsScreen(
 }
 
 @Composable
-private fun ConnectionMessage(text: String, isError: Boolean) {
+private fun ConnectionMessage(connection: ConnectionState) {
+    val text = when (connection) {
+        ConnectionState.Unknown, ConnectionState.Testing -> return
+
+        is ConnectionState.Reachable -> connection.workers
+            ?.let { stringResource(R.string.settings_reachable_workers, it.ready, it.idle, it.running) }
+            ?: stringResource(R.string.settings_reachable)
+
+        ConnectionState.Unauthorized -> stringResource(R.string.settings_error_unauthorized)
+        ConnectionState.EndpointNotFound -> stringResource(R.string.settings_error_not_found)
+        ConnectionState.NoNetwork -> stringResource(
+            R.string.settings_unreachable,
+            stringResource(R.string.settings_error_network),
+        )
+
+        is ConnectionState.Failed -> stringResource(
+            R.string.settings_unreachable,
+            connection.detail.orEmpty(),
+        )
+    }
     Text(
         text = text,
         style = MaterialTheme.typography.bodySmall,
-        color = if (isError) {
-            MaterialTheme.colorScheme.error
-        } else {
+        color = if (connection is ConnectionState.Reachable) {
             MaterialTheme.colorScheme.primary
+        } else {
+            MaterialTheme.colorScheme.error
         },
     )
 }

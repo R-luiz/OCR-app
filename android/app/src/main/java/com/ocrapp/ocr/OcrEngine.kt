@@ -1,6 +1,8 @@
 package com.ocrapp.ocr
 
 import android.graphics.Bitmap
+import java.io.Closeable
+import kotlin.coroutines.cancellation.CancellationException
 
 /** Which OCR backend produced (or should produce) a result. */
 enum class EngineType {
@@ -9,13 +11,42 @@ enum class EngineType {
 
     /** Baidu Unlimited-OCR running on a RunPod Serverless endpoint. */
     DOCUMENT,
+    ;
+
+    companion object {
+        /** Reads a value stored as [name]; an unknown one is treated as on-device. */
+        fun fromStored(name: String): EngineType = entries.firstOrNull { it.name == name } ?: QUICK
+    }
 }
 
-/** A single page of input, already decoded and oriented upright. */
-data class PageImage(
-    val index: Int,
-    val bitmap: Bitmap,
-)
+/**
+ * A document whose pages are rasterized on demand.
+ *
+ * Nothing is decoded until [render] is called and every call hands back a bitmap the
+ * caller recycles, so a 60-page PDF costs one page of memory at a time rather than sixty.
+ * Each consumer also asks for the size it actually needs, instead of everything being
+ * decoded at one size and scaled again downstream.
+ * Consumers render and close sequentially, with at most one page in use at a time.
+ */
+interface PageSource : Closeable {
+    val pageCount: Int
+
+    /**
+     * Rasterizes page [index] upright with its longer edge at most [maxEdge] pixels.
+     * The caller owns the returned bitmap.
+     */
+    suspend fun render(index: Int, maxEdge: Int): Bitmap
+}
+
+/** Renders page [index], hands it to [block], and recycles it afterwards. */
+suspend inline fun <T> PageSource.usePage(index: Int, maxEdge: Int, block: (Bitmap) -> T): T {
+    val bitmap = render(index, maxEdge)
+    try {
+        return block(bitmap)
+    } finally {
+        bitmap.recycle()
+    }
+}
 
 /**
  * Result of a recognition run.
@@ -29,13 +60,15 @@ data class OcrOutput(
     val engine: EngineType,
     val pageCount: Int,
     /**
-     * Pages the backend recognized no text on, by page number (1-based).
+     * Pages no text was recognized on, by page number (1-based).
      *
      * Surfaced because a document that is short by a page still reads as complete:
      * without this the user is handed a result with content missing and nothing to
      * indicate it.
      */
     val emptyPageNumbers: List<Int> = emptyList(),
+    /** What the backend had to say about the run, e.g. that it lost cross-page context. */
+    val warnings: List<String> = emptyList(),
 )
 
 /**
@@ -51,25 +84,36 @@ enum class OcrStage {
     UPLOADING,
     QUEUED,
     RUNNING,
+    SAVING,
 }
+
+/**
+ * Where a run is. [page] of [pageCount] is set for the per-page stages
+ * ([OcrStage.PREPARING], [OcrStage.RECOGNIZING]) and zero for the others.
+ */
+data class OcrProgress(
+    val stage: OcrStage,
+    val page: Int = 0,
+    val pageCount: Int = 0,
+)
 
 /**
  * Recognizes text across one or more pages.
  *
- * Implementations must be safe to call from any dispatcher; each moves work onto an
+ * Implementations are safe to call from any dispatcher; each moves work onto an
  * appropriate one internally.
  */
 interface OcrEngine {
     val type: EngineType
 
     /**
-     * @param onStage invoked as the run moves between stages, for progress UI.
+     * @param onProgress invoked as the run advances, possibly off the caller's thread.
      * @return the recognized output, or a failure describing why recognition could
      *   not complete. Implementations do not throw for expected conditions.
      */
     suspend fun recognize(
-        pages: List<PageImage>,
-        onStage: (OcrStage) -> Unit = {},
+        pages: PageSource,
+        onProgress: (OcrProgress) -> Unit = {},
     ): Result<OcrOutput>
 }
 
@@ -92,3 +136,18 @@ class BackendUnavailableException(
     message: String,
     cause: Throwable? = null,
 ) : Exception(message, cause)
+
+/**
+ * [runCatching] that lets coroutine cancellation through.
+ *
+ * Trapping a [CancellationException] in a [Result] turns "the user cancelled" into an
+ * ordinary failure, and the caller then carries on with work nobody is waiting for.
+ */
+inline fun <T> runCatchingCancellable(block: () -> T): Result<T> =
+    try {
+        Result.success(block())
+    } catch (cancellation: CancellationException) {
+        throw cancellation
+    } catch (error: Exception) {
+        Result.failure(error)
+    }

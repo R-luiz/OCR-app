@@ -23,13 +23,16 @@ class QrScanViewModel @Inject constructor(
     val state: StateFlow<QrScanUiState> = _state.asStateFlow()
 
     /**
-     * Frames keep arriving from the camera until analysis is unbound, so this ignores
-     * every detection after the first — the result sheet stays showing whatever was
-     * found until the user dismisses it with [reset].
+     * Looks for a code only while none is showing: the result sheet keeps whatever was
+     * found until the user dismisses it with [reset], and frames arriving in between
+     * are dropped without being analyzed.
      */
-    fun createAnalyzer(): ImageAnalysis.Analyzer = scanner.analyzer { value ->
-        _state.update { if (it.result == null) it.copy(result = value) else it }
-    }
+    fun createAnalyzer(): ImageAnalysis.Analyzer = scanner.analyzer(
+        isWanted = { _state.value.result == null },
+        onResult = { value ->
+            _state.update { if (it.result == null) it.copy(result = value) else it }
+        },
+    )
 
     fun reset() {
         _state.update { it.copy(result = null) }

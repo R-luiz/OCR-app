@@ -2,8 +2,8 @@ package com.ocrapp.ui.home
 
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
-import com.ocrapp.data.ScanEntity
 import com.ocrapp.data.ScanRepository
+import com.ocrapp.data.ScanSummary
 import dagger.hilt.android.lifecycle.HiltViewModel
 import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.FlowPreview
@@ -25,14 +25,15 @@ class HomeViewModel @Inject constructor(
     private val _query = MutableStateFlow("")
     val query: StateFlow<String> = _query.asStateFlow()
 
+    /** Null until the first read lands, so the list does not flash "No scans yet". */
     @OptIn(ExperimentalCoroutinesApi::class, FlowPreview::class)
-    val scans: StateFlow<List<ScanEntity>> = _query
+    val scans: StateFlow<List<ScanSummary>?> = _query
         .debounce { if (it.isBlank()) 0L else SEARCH_DEBOUNCE_MS }
         .flatMapLatest { repository.observe(it) }
         .stateIn(
             scope = viewModelScope,
             started = SharingStarted.WhileSubscribed(5_000),
-            initialValue = emptyList(),
+            initialValue = null,
         )
 
     fun onQueryChange(value: String) {

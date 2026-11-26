@@ -1,0 +1,121 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="action_back">Retour</string>
+    <string name="action_cancel">Annuler</string>
+    <string name="action_save">Enregistrer</string>
+    <string name="action_delete">Supprimer</string>
+    <string name="action_copy">Copier</string>
+    <string name="action_share">Partager</string>
+    <string name="copied_to_clipboard">Copié dans le presse-papiers</string>
+
+    <string name="home_title">Scans</string>
+    <string name="home_search_hint">Rechercher dans les scans</string>
+    <string name="home_search_clear">Effacer la recherche</string>
+    <string name="home_empty_title">Aucun scan pour l\'instant</string>
+    <string name="home_empty_body">Photographiez une page ou importez un PDF pour commencer.</string>
+    <string name="home_empty_search">Aucun scan ne correspond à votre recherche</string>
+    <string name="home_new_scan">Nouveau scan</string>
+    <plurals name="page_count">
+        <item quantity="one">%1$d page</item>
+        <item quantity="many">%1$d pages</item>
+        <item quantity="other">%1$d pages</item>
+    </plurals>
+
+    <string name="delete_scan_title">Supprimer ce scan ?</string>
+    <string name="delete_scan_body">Son texte est effacé de cet appareil et ne peut pas être récupéré.</string>
+
+    <string name="capture_title">Capture</string>
+    <string name="capture_shutter">Prendre la photo</string>
+    <string name="capture_import_images">Importer des images</string>
+    <string name="capture_import_pdf">Importer un PDF</string>
+    <string name="capture_permission_rationale">L\'accès à l\'appareil photo est nécessaire pour scanner des pages. Vous pouvez aussi importer des images ou un PDF.</string>
+    <string name="capture_grant_permission">Autoriser l\'appareil photo</string>
+    <string name="capture_camera_unavailable">Appareil photo indisponible. Vous pouvez toujours importer des images ou un PDF.</string>
+    <string name="capture_multi_page">Plusieurs pages</string>
+    <string name="capture_scan_pending">Analyser (%1$d)</string>
+    <string name="capture_discard_pending">Abandonner les pages photographiées</string>
+    <string name="capture_discard_pending_body">Les photos de ce lot n’ont été ni analysées ni enregistrées.</string>
+
+    <string name="mode_quick">Scan rapide</string>
+    <string name="mode_document">Analyse de document</string>
+    <string name="mode_quick_hint">Sur l’appareil, fonctionne hors ligne</string>
+    <string name="mode_document_hint">Les pages sont envoyées à votre endpoint RunPod pour produire du Markdown mis en forme.</string>
+
+    <string name="result_title">Résultat</string>
+    <string name="result_engine_quick">Scan rapide · sur l\'appareil</string>
+    <string name="result_engine_document">Analyse de document · Unlimited-OCR</string>
+    <string name="result_more">Plus d\'options</string>
+    <string name="result_rename">Renommer</string>
+    <string name="result_rename_label">Titre</string>
+    <string name="result_rendered">Mis en forme</string>
+    <string name="result_raw">Brut</string>
+    <string name="result_share_chooser">Partager le texte</string>
+    <string name="result_discard_title">Abandonner vos modifications ?</string>
+    <string name="result_discard_body">Les corrections apportées à ce scan n\'ont pas été enregistrées.</string>
+    <string name="result_discard_confirm">Abandonner</string>
+
+    <string name="settings_title">Réglages</string>
+    <string name="settings_runpod_header">Serveur Unlimited-OCR</string>
+    <string name="settings_endpoint_id">ID de l\'endpoint RunPod</string>
+    <string name="settings_api_key">Clé d\'API RunPod</string>
+    <string name="settings_test">Tester la connexion</string>
+    <string name="settings_saved">Réglages enregistrés</string>
+    <string name="settings_read_failed">Impossible de lire les réglages enregistrés.</string>
+    <string name="settings_save_failed">Impossible d’enregistrer les réglages.</string>
+    <string name="settings_version">Version de l\'application %1$s</string>
+    <string name="settings_hint">L\'analyse de document envoie les pages à votre propre endpoint RunPod Serverless. Laissez vide pour n\'utiliser que le scan rapide sur l\'appareil.</string>
+    <string name="settings_reachable">Endpoint joignable</string>
+    <string name="settings_reachable_workers">Endpoint joignable — %1$d prêts, %2$d inactifs, %3$d en cours</string>
+    <string name="settings_unreachable">Endpoint injoignable : %1$s</string>
+    <string name="settings_error_unauthorized">RunPod a refusé la clé d\'API</string>
+    <string name="settings_error_not_found">RunPod n\'a aucun endpoint avec cet ID</string>
+    <string name="settings_error_network">pas de connexion réseau vers RunPod</string>
+
+    <string name="progress_preparing">Préparation des pages…</string>
+    <string name="progress_preparing_page">Préparation de la page %1$d sur %2$d…</string>
+    <string name="progress_recognizing">Reconnaissance du texte…</string>
+    <string name="progress_recognizing_page">Reconnaissance de la page %1$d sur %2$d…</string>
+    <string name="progress_uploading">Envoi…</string>
+    <string name="progress_queued">En attente d\'un serveur GPU…</string>
+    <string name="progress_running">Analyse du document…</string>
+    <string name="progress_saving">Enregistrement du scan…</string>
+    <string name="progress_cold_start">Votre endpoint GPU démarre. Le premier scan après une pause prend quelques minutes ; les suivants sont rapides.</string>
+
+    <plurals name="pages_empty">
+        <item quantity="one">Aucun texte reconnu sur la page %2$s — elle manque dans le résultat.</item>
+        <item quantity="many">Aucun texte reconnu sur les pages %2$s — elles manquent dans le résultat.</item>
+        <item quantity="other">Aucun texte reconnu sur les pages %2$s — elles manquent dans le résultat.</item>
+    </plurals>
+    <plurals name="pages_dropped">
+        <item quantity="one">Seules les %2$d premières pages ont été scannées — %1$d autre a été laissée de côté.</item>
+        <item quantity="many">Seules les %2$d premières pages ont été scannées — %1$d autres ont été laissées de côté.</item>
+        <item quantity="other">Seules les %2$d premières pages ont été scannées — %1$d autres ont été laissées de côté.</item>
+    </plurals>
+
+    <string name="error_no_backend">Aucun serveur configuré — le scan rapide sur l\'appareil a été utilisé à la place.</string>
+    <string name="error_backend_unreachable">Serveur injoignable — le scan rapide sur l\'appareil a été utilisé à la place.</string>
+    <string name="error_backend_failed">Le serveur a renvoyé une erreur — le scan rapide sur l\'appareil a été utilisé à la place.</string>
+    <string name="error_no_text">Aucun texte trouvé.</string>
+    <string name="error_load_failed">Impossible de lire ce fichier.</string>
+    <string name="error_recognition_failed">La reconnaissance a échoué.</string>
+    <string name="error_capture_failed">Impossible de prendre la photo.</string>
+    <string name="error_scan_missing">Ce scan n\'existe plus.</string>
+    <string name="error_scan_save_failed">Impossible d’enregistrer ce scan.</string>
+    <string name="error_scan_update_failed">Impossible de modifier ce scan.</string>
+
+    <string name="qr_scan_title">Scanner un QR code</string>
+    <string name="qr_scan_hint">Visez un QR code avec l\'appareil photo</string>
+    <string name="qr_scan_permission_rationale">L\'accès à l\'appareil photo est nécessaire pour scanner des QR codes.</string>
+    <string name="qr_result_share_chooser">Partager le contenu du QR code</string>
+    <string name="qr_result_open">Ouvrir le lien</string>
+    <string name="qr_result_scan_again">Scanner à nouveau</string>
+    <string name="qr_result_open_failed">Aucune application ne peut ouvrir ce lien</string>
+
+    <string name="qr_generate_title">Créer un QR code</string>
+    <string name="qr_generate_input_label">Texte ou lien</string>
+    <string name="qr_generate_empty">Saisissez un texte pour générer un QR code</string>
+    <string name="qr_generate_too_long">Ce texte est trop long pour tenir dans un QR code</string>
+    <string name="qr_generate_share_chooser">Partager l\'image du QR code</string>
+    <string name="qr_generate_saved">Enregistré dans Images</string>
+    <string name="qr_generate_save_failed">Impossible d\'enregistrer l\'image</string>
+</resources>

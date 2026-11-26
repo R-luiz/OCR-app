@@ -4,16 +4,15 @@ import android.graphics.Bitmap
 import androidx.annotation.OptIn
 import androidx.camera.core.ExperimentalGetImage
 import androidx.camera.core.ImageAnalysis
-import androidx.camera.core.ImageProxy
 import com.google.mlkit.vision.barcode.BarcodeScannerOptions
 import com.google.mlkit.vision.barcode.BarcodeScanning
 import com.google.mlkit.vision.barcode.common.Barcode
 import com.google.mlkit.vision.common.InputImage
-import kotlinx.coroutines.CancellableContinuation
 import kotlinx.coroutines.suspendCancellableCoroutine
 import javax.inject.Inject
 import javax.inject.Singleton
 import kotlin.coroutines.resume
+import kotlin.coroutines.resumeWithException
 
 /**
  * Reads QR codes via ML Kit's bundled barcode scanner — on-device, no network, no Play
@@ -29,30 +28,30 @@ class QrCodeScanner @Inject constructor() {
         BarcodeScanning.getClient(options)
     }
 
-    /** Decodes a single still image. Used for imported/generated images and in tests. */
+    /** Decodes a single still image; null when it holds no QR code. */
     suspend fun scan(bitmap: Bitmap): String? =
-        suspendCancellableCoroutine { continuation: CancellableContinuation<String?> ->
-            val input = InputImage.fromBitmap(bitmap, 0)
-            scanner.process(input)
+        suspendCancellableCoroutine { continuation ->
+            scanner.process(InputImage.fromBitmap(bitmap, 0))
                 .addOnSuccessListener { barcodes ->
                     continuation.resume(barcodes.firstOrNull()?.rawValue)
                 }
                 .addOnFailureListener { error ->
-                    if (continuation.isActive) continuation.resumeWith(Result.failure(error))
+                    if (continuation.isActive) continuation.resumeWithException(error)
                 }
         }
 
     /**
-     * An [ImageAnalysis.Analyzer] for live camera frames. [onResult] fires on every frame
-     * a QR code is found in; callers own debouncing repeated results (e.g. ignore further
-     * calls once a value has been accepted) since frames keep arriving until analysis is
-     * unbound.
+     * An [ImageAnalysis.Analyzer] for live camera frames.
+     *
+     * Frames keep arriving until analysis is unbound. While [isWanted] is false they are
+     * dropped unread, so a result already on screen does not keep the detector running;
+     * [onResult] fires for every frame a QR code is found in while it is true.
      */
     @OptIn(ExperimentalGetImage::class)
-    fun analyzer(onResult: (String) -> Unit): ImageAnalysis.Analyzer =
-        ImageAnalysis.Analyzer { imageProxy: ImageProxy ->
+    fun analyzer(isWanted: () -> Boolean, onResult: (String) -> Unit): ImageAnalysis.Analyzer =
+        ImageAnalysis.Analyzer { imageProxy ->
             val mediaImage = imageProxy.image
-            if (mediaImage == null) {
+            if (mediaImage == null || !isWanted()) {
                 imageProxy.close()
                 return@Analyzer
             }

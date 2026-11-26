@@ -1,34 +1,25 @@
 package com.ocrapp.ui.qrscan
 
-import android.Manifest
 import android.content.Intent
-import android.content.pm.PackageManager
 import android.net.Uri
-import androidx.activity.compose.rememberLauncherForActivityResult
-import androidx.activity.result.contract.ActivityResultContracts
-import androidx.camera.core.CameraSelector
+import android.util.Patterns
 import androidx.camera.core.ImageAnalysis
-import androidx.camera.core.Preview
-import androidx.camera.lifecycle.ProcessCameraProvider
-import androidx.camera.view.PreviewView
 import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.BoxScope
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
-import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
-import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.foundation.text.selection.SelectionContainer
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
+import androidx.compose.material.icons.automirrored.filled.OpenInNew
 import androidx.compose.material.icons.filled.ContentCopy
-import androidx.compose.material.icons.filled.OpenInNew
 import androidx.compose.material.icons.filled.Share
-import androidx.compose.material3.Button
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
@@ -42,25 +33,24 @@ import androidx.compose.material3.TextButton
 import androidx.compose.material3.TopAppBar
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
-import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
-import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
-import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalClipboardManager
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.text.AnnotatedString
+import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
-import androidx.compose.ui.viewinterop.AndroidView
-import androidx.core.content.ContextCompat
 import androidx.hilt.navigation.compose.hiltViewModel
-import androidx.lifecycle.compose.LocalLifecycleOwner
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.ocrapp.R
+import com.ocrapp.ui.camera.CameraPermissionPrompt
+import com.ocrapp.ui.camera.CameraPreview
+import com.ocrapp.ui.camera.rememberCameraPermission
 import kotlinx.coroutines.launch
 import java.util.concurrent.Executors
 
@@ -75,23 +65,10 @@ fun QrScanScreen(
     val snackbarHostState = remember { SnackbarHostState() }
     val scope = rememberCoroutineScope()
     val clipboard = LocalClipboardManager.current
-    val copiedMessage = stringResource(R.string.qr_result_copied)
+    val cameraPermission = rememberCameraPermission()
+    val copiedMessage = stringResource(R.string.copied_to_clipboard)
     val openFailedMessage = stringResource(R.string.qr_result_open_failed)
     val shareChooserTitle = stringResource(R.string.qr_result_share_chooser)
-
-    var hasCameraPermission by remember {
-        mutableStateOf(
-            ContextCompat.checkSelfPermission(context, Manifest.permission.CAMERA) ==
-                PackageManager.PERMISSION_GRANTED,
-        )
-    }
-    val permissionLauncher = rememberLauncherForActivityResult(
-        ActivityResultContracts.RequestPermission(),
-    ) { granted -> hasCameraPermission = granted }
-
-    LaunchedEffect(Unit) {
-        if (!hasCameraPermission) permissionLauncher.launch(Manifest.permission.CAMERA)
-    }
 
     Scaffold(
         topBar = {
@@ -99,7 +76,10 @@ fun QrScanScreen(
                 title = { Text(stringResource(R.string.qr_scan_title)) },
                 navigationIcon = {
                     IconButton(onClick = onBack) {
-                        Icon(Icons.AutoMirrored.Filled.ArrowBack, contentDescription = null)
+                        Icon(
+                            Icons.AutoMirrored.Filled.ArrowBack,
+                            stringResource(R.string.action_back),
+                        )
                     }
                 },
             )
@@ -107,11 +87,15 @@ fun QrScanScreen(
         snackbarHost = { SnackbarHost(snackbarHostState) },
     ) { padding ->
         Box(modifier = Modifier.fillMaxSize().padding(padding)) {
-            if (hasCameraPermission) {
-                QrCameraPreview(analyzer = remember { viewModel.createAnalyzer() })
+            if (cameraPermission.isGranted) {
+                CameraPreview(
+                    rememberQrAnalysis(viewModel),
+                    modifier = Modifier.fillMaxSize(),
+                )
                 Text(
                     text = stringResource(R.string.qr_scan_hint),
-                    color = MaterialTheme.colorScheme.onPrimary,
+                    // Drawn over the camera image, whatever the theme: white on scrim.
+                    color = Color.White,
                     style = MaterialTheme.typography.bodyMedium,
                     modifier = Modifier
                         .align(Alignment.TopCenter)
@@ -123,8 +107,9 @@ fun QrScanScreen(
                         .padding(horizontal = 16.dp, vertical = 8.dp),
                 )
             } else {
-                PermissionPrompt(
-                    onRequest = { permissionLauncher.launch(Manifest.permission.CAMERA) },
+                CameraPermissionPrompt(
+                    rationale = stringResource(R.string.qr_scan_permission_rationale),
+                    onRequest = cameraPermission.request,
                 )
             }
 
@@ -142,14 +127,11 @@ fun QrScanScreen(
                         }
                         context.startActivity(Intent.createChooser(send, shareChooserTitle))
                     },
-                    onOpen = {
-                        val url = value.asOpenableUrl()
-                        if (url != null) {
-                            runCatching {
-                                context.startActivity(Intent(Intent.ACTION_VIEW, Uri.parse(url)))
-                            }.onFailure {
-                                scope.launch { snackbarHostState.showSnackbar(openFailedMessage) }
-                            }
+                    onOpen = { url ->
+                        runCatching {
+                            context.startActivity(Intent(Intent.ACTION_VIEW, Uri.parse(url)))
+                        }.onFailure {
+                            scope.launch { snackbarHostState.showSnackbar(openFailedMessage) }
                         }
                     },
                     onScanAgain = viewModel::reset,
@@ -159,73 +141,28 @@ fun QrScanScreen(
     }
 }
 
+/** The analysis use case reading QR codes off the preview, on a thread of its own. */
+@Composable
+private fun rememberQrAnalysis(viewModel: QrScanViewModel): ImageAnalysis {
+    val executor = remember { Executors.newSingleThreadExecutor() }
+    DisposableEffect(executor) {
+        onDispose { executor.shutdown() }
+    }
+    return remember(viewModel) {
+        ImageAnalysis.Builder()
+            .setBackpressureStrategy(ImageAnalysis.STRATEGY_KEEP_ONLY_LATEST)
+            .build()
+            .apply { setAnalyzer(executor, viewModel.createAnalyzer()) }
+    }
+}
+
 /** Recognizes an http(s) link, prefixing a bare scheme-less domain with https. */
 private fun String.asOpenableUrl(): String? {
     val trimmed = trim()
     return when {
         trimmed.startsWith("http://") || trimmed.startsWith("https://") -> trimmed
-        android.util.Patterns.WEB_URL.matcher(trimmed).matches() -> "https://$trimmed"
+        Patterns.WEB_URL.matcher(trimmed).matches() -> "https://$trimmed"
         else -> null
-    }
-}
-
-@Composable
-private fun QrCameraPreview(analyzer: ImageAnalysis.Analyzer) {
-    val context = LocalContext.current
-    val lifecycleOwner = LocalLifecycleOwner.current
-    val previewView = remember { PreviewView(context) }
-    val analysisExecutor = remember { Executors.newSingleThreadExecutor() }
-
-    DisposableEffect(lifecycleOwner) {
-        val providerFuture = ProcessCameraProvider.getInstance(context)
-        var provider: ProcessCameraProvider? = null
-
-        providerFuture.addListener({
-            provider = providerFuture.get()
-            val preview = Preview.Builder().build().apply {
-                setSurfaceProvider(previewView.surfaceProvider)
-            }
-            val analysis = ImageAnalysis.Builder()
-                .setBackpressureStrategy(ImageAnalysis.STRATEGY_KEEP_ONLY_LATEST)
-                .build()
-                .apply { setAnalyzer(analysisExecutor, analyzer) }
-
-            runCatching {
-                provider?.unbindAll()
-                provider?.bindToLifecycle(
-                    lifecycleOwner,
-                    CameraSelector.DEFAULT_BACK_CAMERA,
-                    preview,
-                    analysis,
-                )
-            }
-        }, ContextCompat.getMainExecutor(context))
-
-        onDispose {
-            provider?.unbindAll()
-            analysisExecutor.shutdown()
-        }
-    }
-
-    AndroidView(factory = { previewView }, modifier = Modifier.fillMaxSize())
-}
-
-@Composable
-private fun PermissionPrompt(onRequest: () -> Unit) {
-    Box(modifier = Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
-        Column(
-            horizontalAlignment = Alignment.CenterHorizontally,
-            modifier = Modifier.padding(24.dp),
-        ) {
-            Text(
-                text = stringResource(R.string.qr_scan_permission_rationale),
-                style = MaterialTheme.typography.bodyMedium,
-            )
-            Spacer(Modifier.height(12.dp))
-            Button(onClick = onRequest) {
-                Text(stringResource(R.string.capture_grant_permission))
-            }
-        }
     }
 }
 
@@ -234,10 +171,10 @@ private fun BoxScope.QrResultSheet(
     value: String,
     onCopy: () -> Unit,
     onShare: () -> Unit,
-    onOpen: () -> Unit,
+    onOpen: (url: String) -> Unit,
     onScanAgain: () -> Unit,
 ) {
-    val isUrl = remember(value) { value.asOpenableUrl() != null }
+    val url = remember(value) { value.asOpenableUrl() }
 
     Surface(
         modifier = Modifier
@@ -248,26 +185,31 @@ private fun BoxScope.QrResultSheet(
         tonalElevation = 6.dp,
     ) {
         Column(modifier = Modifier.padding(16.dp)) {
-            Text(
-                text = value,
-                style = MaterialTheme.typography.bodyLarge,
-                maxLines = 4,
-            )
-            Spacer(Modifier.height(8.dp))
+            SelectionContainer {
+                Text(
+                    text = value,
+                    style = MaterialTheme.typography.bodyLarge,
+                    maxLines = 6,
+                    overflow = TextOverflow.Ellipsis,
+                )
+            }
             Row(
                 modifier = Modifier.fillMaxWidth().padding(top = 12.dp),
                 horizontalArrangement = Arrangement.SpaceBetween,
             ) {
                 Row {
                     IconButton(onClick = onCopy) {
-                        Icon(Icons.Default.ContentCopy, stringResource(R.string.qr_result_copy))
+                        Icon(Icons.Default.ContentCopy, stringResource(R.string.action_copy))
                     }
                     IconButton(onClick = onShare) {
-                        Icon(Icons.Default.Share, stringResource(R.string.qr_result_share))
+                        Icon(Icons.Default.Share, stringResource(R.string.action_share))
                     }
-                    if (isUrl) {
-                        IconButton(onClick = onOpen) {
-                            Icon(Icons.Default.OpenInNew, stringResource(R.string.qr_result_open))
+                    if (url != null) {
+                        IconButton(onClick = { onOpen(url) }) {
+                            Icon(
+                                Icons.AutoMirrored.Filled.OpenInNew,
+                                stringResource(R.string.qr_result_open),
+                            )
                         }
                     }
                 }

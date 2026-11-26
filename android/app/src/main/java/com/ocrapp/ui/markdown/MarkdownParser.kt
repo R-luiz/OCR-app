@@ -36,6 +36,9 @@ object MarkdownParser {
     private val QUOTE = Regex("^\\s{0,3}>\\s?(.*)$")
     private val TABLE_DIVIDER = Regex("^\\s*\\|?(\\s*:?-+:?\\s*\\|)+\\s*(:?-+:?\\s*)?\\|?\\s*$")
 
+    /** A cell boundary: a pipe that is not escaped as `\|` inside a cell. */
+    private val CELL_SEPARATOR = Regex("(?<!\\\\)\\|")
+
     fun parse(markdown: String): List<MarkdownBlock> {
         val lines = markdown.lines()
         val blocks = mutableListOf<MarkdownBlock>()
@@ -156,6 +159,6 @@ object MarkdownParser {
         line.trim()
             .removePrefix("|")
             .removeSuffix("|")
-            .split('|')
-            .map { it.trim() }
+            .split(CELL_SEPARATOR)
+            .map { it.trim().replace("\\|", "|") }
 }

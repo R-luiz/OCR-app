@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
 """End-to-end smoke test for the Unlimited-OCR worker.
 
-Points at either a local dev server or a deployed RunPod endpoint and asserts that a
-page image comes back as non-empty Markdown.
+Points at a local dev server or RunPod and requires non-empty Markdown for every
+supplied page.
 
 Local (on a CUDA box, from backend/)::
 
@@ -14,8 +14,7 @@ Deployed::
     python test_local.py --endpoint <ENDPOINT_ID> --api-key $RUNPOD_API_KEY \\
         --image sample.png
 
-Unlike the app, this uses the synchronous ``/runsync`` route for brevity; it will time
-out at 90 seconds against a cold worker, which is expected — re-run once it is warm.
+Uses ``/runsync`` for a local dev server and ``/run`` with polling on RunPod.
 """
 
 from __future__ import annotations
@@ -97,13 +96,8 @@ def main() -> int:
         parser.error("pass either --url, or both --endpoint and --api-key")
 
     images = [encode_image(path) for path in args.image]
-    payload = {
-        "input": {
-            "mode": "single" if len(images) == 1 else "multi",
-            "images": images,
-        },
-    }
-    print(f"sending {len(images)} page(s) in {payload['input']['mode']} mode")
+    payload = {"input": {"images": images}}
+    print(f"sending {len(images)} page(s)")
 
     started = time.monotonic()
     try:
@@ -130,8 +124,17 @@ def main() -> int:
         print(f"FAIL: empty markdown in response: {json.dumps(response)[:500]}", file=sys.stderr)
         return 1
 
-    print(f"\nOK in {elapsed:.1f}s — {len(markdown)} chars, "
-          f"{len((output or {}).get('pages', []))} page section(s)\n")
+    returned = output.get("pages") or []
+    indexes = [page.get("index") for page in returned]
+    blank = [page.get("index") for page in returned if not page.get("markdown", "").strip()]
+    if indexes != list(range(len(images))) or blank:
+        print(f"FAIL: sent {len(images)} pages, returned indexes {indexes}, blank {blank}", file=sys.stderr)
+        return 1
+
+    print(f"\nOK in {elapsed:.1f}s — {len(markdown)} chars across {len(returned)} pages")
+    for warning in (output or {}).get("warnings") or []:
+        print(f"  warning: {warning}")
+    print()
     print(markdown[:2000])
     if len(markdown) > 2000:
         print(f"\n… {len(markdown) - 2000} more chars")

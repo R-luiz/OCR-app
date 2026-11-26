@@ -13,6 +13,7 @@ import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.aspectRatio
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.imePadding
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
@@ -82,7 +83,10 @@ fun QrGenerateScreen(
                 title = { Text(stringResource(R.string.qr_generate_title)) },
                 navigationIcon = {
                     IconButton(onClick = onBack) {
-                        Icon(Icons.AutoMirrored.Filled.ArrowBack, contentDescription = null)
+                        Icon(
+                            Icons.AutoMirrored.Filled.ArrowBack,
+                            stringResource(R.string.action_back),
+                        )
                     }
                 },
                 actions = {
@@ -102,7 +106,7 @@ fun QrGenerateScreen(
                             }
                         },
                     ) {
-                        Icon(Icons.Default.Save, stringResource(R.string.qr_generate_save))
+                        Icon(Icons.Default.Save, stringResource(R.string.action_save))
                     }
                     IconButton(
                         enabled = hasImage,
@@ -118,7 +122,7 @@ fun QrGenerateScreen(
                             }
                         },
                     ) {
-                        Icon(Icons.Default.Share, stringResource(R.string.qr_generate_share))
+                        Icon(Icons.Default.Share, stringResource(R.string.action_share))
                     }
                 },
             )
@@ -126,7 +130,7 @@ fun QrGenerateScreen(
         snackbarHost = { SnackbarHost(snackbarHostState) },
     ) { padding ->
         Column(
-            modifier = Modifier.fillMaxSize().padding(padding).padding(16.dp),
+            modifier = Modifier.fillMaxSize().padding(padding).imePadding().padding(16.dp),
             horizontalAlignment = Alignment.CenterHorizontally,
         ) {
             Box(

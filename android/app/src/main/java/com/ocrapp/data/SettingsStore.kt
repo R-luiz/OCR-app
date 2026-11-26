@@ -8,19 +8,20 @@ import com.ocrapp.BuildConfig
 import com.ocrapp.ocr.RunPodCredentials
 import com.ocrapp.ocr.RunPodCredentialsProvider
 import dagger.hilt.android.qualifiers.ApplicationContext
-import kotlinx.coroutines.channels.awaitClose
-import kotlinx.coroutines.flow.Flow
-import kotlinx.coroutines.flow.callbackFlow
-import kotlinx.coroutines.flow.onStart
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.withContext
 import javax.inject.Inject
 import javax.inject.Singleton
 
 /**
  * Persists the RunPod endpoint coordinates.
  *
- * Values default to whatever was baked in from `local.properties` at build time, and a
- * runtime edit in Settings overrides that. The API key is a bearer credential that can
- * spend money, so it lives in [EncryptedSharedPreferences] rather than plain prefs.
+ * Debug builds can supply defaults from `local.properties`; release builds start empty.
+ * A runtime edit takes precedence. The API key can spend money, so it lives in
+ * [EncryptedSharedPreferences] rather than plain prefs.
+ *
+ * Opening that file reaches into the hardware keystore, which takes long enough to drop
+ * frames, so every access here is a suspend function that leaves the main thread.
  */
 @Singleton
 class SettingsStore @Inject constructor(
@@ -40,34 +41,22 @@ class SettingsStore @Inject constructor(
         )
     }
 
-    val endpointId: String
-        get() = prefs.getString(KEY_ENDPOINT_ID, null) ?: BuildConfig.RUNPOD_ENDPOINT_ID
-
-    val apiKey: String
-        get() = prefs.getString(KEY_API_KEY, null) ?: BuildConfig.RUNPOD_API_KEY
-
-    /** True when Document parsing can be attempted at all. */
-    val isBackendConfigured: Boolean
-        get() = endpointId.isNotBlank() && apiKey.isNotBlank()
-
-    override suspend fun credentials(): RunPodCredentials? =
-        RunPodCredentials(endpointId, apiKey).takeIf { it.isComplete }
-
-    fun save(endpointId: String, apiKey: String) {
-        prefs.edit()
-            .putString(KEY_ENDPOINT_ID, endpointId.trim())
-            .putString(KEY_API_KEY, apiKey.trim())
-            .apply()
+    /** The stored credentials, complete or not. */
+    suspend fun load(): RunPodCredentials = withContext(Dispatchers.IO) {
+        RunPodCredentials(
+            endpointId = prefs.getString(KEY_ENDPOINT_ID, null) ?: BuildConfig.RUNPOD_ENDPOINT_ID,
+            apiKey = prefs.getString(KEY_API_KEY, null) ?: BuildConfig.RUNPOD_API_KEY,
+        )
     }
 
-    /** Emits on every change so the UI can react to the backend becoming configured. */
-    fun observe(): Flow<RunPodCredentials> = callbackFlow {
-        val listener = SharedPreferences.OnSharedPreferenceChangeListener { _, _ ->
-            trySend(RunPodCredentials(endpointId, apiKey))
-        }
-        prefs.registerOnSharedPreferenceChangeListener(listener)
-        awaitClose { prefs.unregisterOnSharedPreferenceChangeListener(listener) }
-    }.onStart { emit(RunPodCredentials(endpointId, apiKey)) }
+    override suspend fun credentials(): RunPodCredentials? = load().takeIf { it.isComplete }
+
+    suspend fun save(credentials: RunPodCredentials): Boolean = withContext(Dispatchers.IO) {
+        prefs.edit()
+            .putString(KEY_ENDPOINT_ID, credentials.endpointId)
+            .putString(KEY_API_KEY, credentials.apiKey)
+            .commit()
+    }
 
     private companion object {
         const val FILE_NAME = "ocr_settings"

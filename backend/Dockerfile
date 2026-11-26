@@ -29,7 +29,7 @@ ENV MODEL_NAME=/opt/models/unlimited-ocr \
     HF_HUB_OFFLINE=1 \
     TRANSFORMERS_OFFLINE=1
 
-COPY handler.py /app/handler.py
+COPY handler.py postprocess.py /app/
 
 # The base image's entrypoint starts vLLM's OpenAI server; RunPod needs our worker
 # loop, so ENTRYPOINT is cleared and CMD is exec'd directly — which means CMD has to
