@@ -76,6 +76,11 @@ secret and run **Deploy RunPod endpoint** with the release's commit-specific
 `image_tag`. The workflow updates an existing endpoint in place. Use
 `deploy-and-smoke-test` with `smoke_test_pages=2` to OCR the two distinct
 pages of the test PDF on RunPod.
+For the default CUDA 13 image, use `min_cuda_version=13.0` and 48 GB GPU
+pools such as `gpu_ids=ADA_48_PRO,AMPERE_48`. `init_timeout` covers the
+container image pull and model startup, not OCR execution. After changing
+only host placement, use `recycle-workers` if an idle worker remains on
+the previous hardware; the command refuses while a worker is processing jobs.
 
 To build an image yourself:
 

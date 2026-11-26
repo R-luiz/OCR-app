@@ -123,10 +123,11 @@ def test_deploy_updates_existing_rest_endpoint_without_recreating_it(monkeypatch
 
 
 def test_deploy_can_move_existing_endpoint_to_a_different_gpu_pool(monkeypatch, rest_endpoint):
-    rest_endpoint["gpu"] = {"pools": ["BLACKWELL_48"], "count": 1, "minCudaVersion": "13.0"}
+    rest_endpoint["gpu"] = {"pools": ["BLACKWELL_48"], "count": 1, "minCudaVersion": "12.0"}
 
     assert run_main(
         monkeypatch, "--confirm", "--gpu-ids", "ADA_48_PRO, AMPERE_48", "--init-timeout", "720",
+        "--min-cuda-version", "13.0",
     ) == 0
     assert rest_endpoint["gpu"] == {
         "pools": ["ADA_48_PRO", "AMPERE_48"], "count": 1, "minCudaVersion": "13.0",
@@ -148,6 +149,8 @@ def test_recycle_restores_limits_when_health_check_fails(monkeypatch, rest_endpo
 
     def failed_health(*args):
         workers = rest_endpoint["workers"]
+        if workers["max"] > 0:
+            return {"running": 0}
         assert (workers["min"], workers["max"]) == (0, 0)
         raise OSError("unreachable")
 
@@ -157,3 +160,16 @@ def test_recycle_restores_limits_when_health_check_fails(monkeypatch, rest_endpo
 
     assert rest_endpoint["workers"] == {"min": 1, "max": 2, "idleTimeout": 60, "initTimeout": 120}
     assert rest_endpoint["flashboot"] == "OFF"
+
+
+def test_recycle_leaves_an_endpoint_with_running_jobs_alone(monkeypatch, rest_endpoint):
+    observed_limits = []
+
+    def worker_counts(*args):
+        observed_limits.append(rest_endpoint["workers"]["max"])
+        return {"running": 1}
+
+    monkeypatch.setattr(deploy_runpod, "_worker_counts", worker_counts)
+    assert run_main(monkeypatch, "--recycle-workers", "abc123") == 1
+    assert rest_endpoint["workers"]["max"] == 2
+    assert observed_limits == [2]

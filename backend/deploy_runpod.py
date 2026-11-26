@@ -121,6 +121,7 @@ def summarize_account(runpod) -> None:
 
 def deploy(runpod, args) -> str:
     existing = find_endpoint(runpod, ENDPOINT_NAME)
+    placement = {"minCudaVersion": args.min_cuda_version} if args.min_cuda_version else {}
 
     if existing:
         endpoint_id = existing["id"]
@@ -137,7 +138,9 @@ def deploy(runpod, args) -> str:
             "flashboot": "FLASHBOOT",
         }
         if args.gpu_ids:
-            changes["gpu"] = {"pools": [pool.strip() for pool in args.gpu_ids.split(",")]}
+            placement["pools"] = [pool.strip() for pool in args.gpu_ids.split(",")]
+        if placement:
+            changes["gpu"] = placement
         saved = _patch_endpoint(endpoint_id, changes)
         if saved.get("image") != args.image:
             raise DeployError(f"endpoint {endpoint_id} did not confirm image {args.image}")
@@ -147,7 +150,8 @@ def deploy(runpod, args) -> str:
             f"idleTimeout {workers.get('idleTimeout')}s, initTimeout {workers.get('initTimeout')}s, "
             f"flashboot {saved['flashboot']}",
         )
-        print(f"  GPU pools: {', '.join(saved['gpu']['pools'])}")
+        gpu = saved["gpu"]
+        print(f"  GPU pools: {', '.join(gpu['pools'])}; minimum CUDA: {gpu.get('minCudaVersion')}")
         return endpoint_id
 
     print(f"creating template from image {args.image}")
@@ -173,8 +177,13 @@ def deploy(runpod, args) -> str:
         flashboot=True,
     )
     endpoint_id = endpoint["id"]
+    changes = {}
+    if placement:
+        changes["gpu"] = placement
     if args.init_timeout is not None:
-        _patch_endpoint(endpoint_id, {"workers": {"initTimeout": args.init_timeout}})
+        changes["workers"] = {"initTimeout": args.init_timeout}
+    if changes:
+        _patch_endpoint(endpoint_id, changes)
     return endpoint_id
 
 
@@ -408,6 +417,10 @@ def recycle_workers(runpod, endpoint_id: str, api_key: str, timeout: int = 300) 
     rollout. Scaling the endpoint to zero stops those workers; restoring the
     limits lets the next request provision one from the current release.
     """
+    if _worker_counts(endpoint_id, api_key).get("running", 0) > 0:
+        print(f"FAIL: endpoint {endpoint_id} has running jobs; no workers recycled", file=sys.stderr)
+        return 1
+
     workers = _find_endpoint_by_id(runpod, endpoint_id)["workers"]
     original_limits = {"min": workers["min"], "max": workers["max"]}
     print(f"endpoint {endpoint_id}: workersMax {workers['max']} -> 0 (draining)")
@@ -482,6 +495,7 @@ def main() -> int:
     # at the cost of billing up to 5 idle GPU-minutes after each use.
     parser.add_argument("--idle-timeout", type=int, default=300)
     parser.add_argument("--init-timeout", type=int, help="seconds allowed for worker initialization")
+    parser.add_argument("--min-cuda-version", help="minimum CUDA version the host driver must support")
     parser.add_argument("--workers-max", type=int, default=1)
     parser.add_argument("--dry-run", action="store_true", help="inspect the account, create nothing")
     parser.add_argument(
