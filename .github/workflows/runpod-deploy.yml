@@ -158,7 +158,48 @@ jobs:
         if: inputs.action == 'health-check'
         env:
           RUNPOD_API_KEY: ${{ secrets.RUNPOD_API_KEY }}
-        run: python backend/deploy_runpod.py --health-check "${{ inputs.endpoint_id }}"
+          ENDPOINT_ID: ${{ inputs.endpoint_id }}
+        run: |
+          python backend/deploy_runpod.py --health-check "$ENDPOINT_ID"
+          if [ -z "$ENDPOINT_ID" ]; then exit 0; fi
+          python - "$ENDPOINT_ID" <<'PY'
+          import json
+          import os
+          import subprocess
+          import sys
+
+          from runpod.api.rest import run_rest_request
+
+          path = f"/v2/serverless/{sys.argv[1]}/workers"
+          state = run_rest_request("GET", path)
+          print(f"Endpoint version: {state.get('endpointVersion')}")
+          # Public Actions logs: report stage markers, never raw container logs.
+          markers = {
+              "starting worker:": "OCR entrypoint",
+              "starting serverless worker": "Runpod SDK started",
+              "completed model loading": "model loaded",
+              "out of memory": "out of memory",
+              "runtimeerror": "runtime error",
+              "modulenotfounderror": "missing dependency",
+              "traceback": "exception",
+              "failed to get job": "job fetch failed",
+              "error fetching job": "job fetch failed",
+              "error getting job": "job fetch failed",
+              "pulling image": "image pull started",
+          }
+          for worker in state["workers"]:
+              fields = ("id", "status", "isStale", "version", "image", "gpuTypeId", "uptimeSeconds")
+              print(json.dumps({key: worker.get(key) for key in fields}))
+              result = subprocess.run(
+                  ["curl", "-fsS", "--max-time", "8", "-H",
+                   f"Authorization: Bearer {os.environ['RUNPOD_API_KEY']}",
+                   f"https://api.runpod.io{path}/{worker['id']}/logs?tail=120"],
+                  capture_output=True, text=True,
+              )
+              stages = {label for line in result.stdout.lower().splitlines() if line.startswith("data:")
+                        for marker, label in markers.items() if marker in line}
+              print("Worker stages:", ", ".join(sorted(stages)) or "none visible")
+          PY
 
       # Clears stuck queued jobs only — no endpoint/template/worker config changes.
       - name: Purge queue
