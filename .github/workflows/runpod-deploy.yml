@@ -5,13 +5,14 @@ on:
   workflow_dispatch:
     inputs:
       action:
-        description: "dry-run/health-check/purge-queue create or change nothing (purge-queue only clears stuck queued jobs)"
+        description: "Deploy, verify OCR, or manage an existing endpoint"
         type: choice
         options:
           - dry-run
           - deploy
           - deploy-and-smoke-test
           - health-check
+          - cancel-job
           - purge-queue
           - recycle-workers
         default: dry-run
@@ -20,7 +21,7 @@ on:
         type: string
         required: false
       endpoint_id:
-        description: "Endpoint ID to read (health-check/purge-queue actions only)"
+        description: "Endpoint ID for health-check, cancel-job, purge-queue or recycle-workers"
         type: string
         required: false
       image_tag:
@@ -45,6 +46,10 @@ on:
         required: false
       min_cuda_version:
         description: "Minimum CUDA version the GPU host must support (deploy actions only)"
+        type: string
+        required: false
+      job_id:
+        description: "Exact Runpod job ID to cancel (cancel-job only)"
         type: string
         required: false
 
@@ -169,6 +174,7 @@ jobs:
           python -u backend/deploy_runpod.py --confirm --image "$IMAGE" \
             --smoke-test "${IMAGES[@]}" \
             --smoke-test-pages "$PAGES" \
+            --smoke-test-timeout 900 \
             ${IDLE:+--idle-timeout "$IDLE"} ${GPU_IDS:+--gpu-ids "$GPU_IDS"} \
             ${INIT_TIMEOUT:+--init-timeout "$INIT_TIMEOUT"} ${CUDA_MIN:+--min-cuda-version "$CUDA_MIN"}
 
@@ -193,9 +199,22 @@ jobs:
           endpoint_path = f"/v2/serverless/{sys.argv[1]}"
           endpoint = run_rest_request("GET", endpoint_path)
           print("Placement:", json.dumps({"gpu": endpoint["gpu"], "workers": endpoint["workers"]}))
+          print("Placement restrictions:", json.dumps({
+              "dataCenterIds": endpoint["dataCenterIds"],
+              "networkVolumeCount": len(endpoint["networkVolumes"]),
+          }))
           path = f"{endpoint_path}/workers"
           state = run_rest_request("GET", path)
           print(f"Endpoint version: {state.get('endpointVersion')}")
+          if not state["workers"] and endpoint["gpu"]:
+              gpu = endpoint["gpu"]
+              filters = {"include": "AVAILABILITY", "product": "SERVERLESS", "count": gpu["count"]}
+              if gpu.get("minCudaVersion"):
+                  filters["minCudaVersion"] = gpu["minCudaVersion"]
+              catalog = run_rest_request("GET", "/v2/catalog/gpus", params=filters)
+              available = {item["id"]: item.get("availability") for item in catalog["gpus"]
+                           if item.get("pool") in gpu["pools"]}
+              print("Serverless GPU availability:", json.dumps(available))
           # Public Actions logs: report stage markers, never raw container logs.
           markers = {
               "starting worker:": "OCR entrypoint",
@@ -227,6 +246,20 @@ jobs:
               print("Worker log stream HTTP:", status if status.isascii() and status.isdigit() else "unknown")
               print("Worker stages:", ", ".join(sorted(stages)) or "none visible")
           PY
+
+      - name: Cancel one job
+        if: inputs.action == 'cancel-job'
+        env:
+          RUNPOD_API_KEY: ${{ secrets.RUNPOD_API_KEY }}
+          ENDPOINT_ID: ${{ inputs.endpoint_id }}
+          JOB_ID: ${{ inputs.job_id }}
+        run: |
+          set -o pipefail
+          [[ "$ENDPOINT_ID" =~ ^[A-Za-z0-9]+$ && "$JOB_ID" =~ ^[A-Za-z0-9-]+$ ]] ||
+            { echo "::error::Pass the endpoint ID and exact job ID to cancel."; exit 1; }
+          curl -fsS --max-time 20 -X POST -H "Authorization: Bearer $RUNPOD_API_KEY" \
+            "https://api.runpod.ai/v2/$ENDPOINT_ID/cancel/$JOB_ID" |
+            jq -e 'select(.status == "CANCELLED") | {id, status}'
 
       # Clears stuck queued jobs only — no endpoint/template/worker config changes.
       - name: Purge queue

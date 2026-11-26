@@ -207,7 +207,10 @@ def smoke_test(
 
     pages = max(pages, len(data_urls))
     images = [data_urls[index % len(data_urls)] for index in range(pages)]
-    payload = {"input": {"images": images}}
+    payload = {
+        "input": {"images": images},
+        "policy": {"ttl": (timeout + POLL_INTERVAL_SECONDS) * 1000},
+    }
     body_mb = len(json.dumps(payload)) / (1024 * 1024)
     print(f"pages={pages}, request body ~{body_mb:.1f} MB")
     base = f"https://api.runpod.ai/v2/{endpoint_id}"
