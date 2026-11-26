@@ -11,11 +11,7 @@ that did not work. The processor itself is the authority; ask it.
 
 The authority is specifically *vLLM's* processor for this architecture, not the
 Transformers remote code: vLLM ships its own implementation and that is what
-serves requests. The Transformers path is probed too, but only opportunistically
--- its modeling file imports addict and matplotlib, which the image does not
-carry, so AutoConfig raises on import. That must not take the rest of the probe
-down with it, which is what the first version did: one ImportError and the whole
-run ended having printed nothing.
+serves requests.
 """
 
 
@@ -39,11 +35,7 @@ def attempt(title: str, fn) -> None:
 
 
 def dump_config() -> None:
-    """Reads config.json directly rather than through AutoConfig.
-
-    AutoConfig would route through trust_remote_code and raise on the missing
-    addict/matplotlib imports before printing anything.
-    """
+    """Reads config.json without importing the model, even in a broken image."""
     global architectures
     with open(os.path.join(MODEL, "config.json")) as handle:
         cfg = json.load(handle)

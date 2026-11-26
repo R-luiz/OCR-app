@@ -43,7 +43,8 @@ COPY handler.py postprocess.py /app/
 # resolve. A regression now breaks the build instead of silently killing the endpoint.
 RUN ln -sf "$(command -v python3)" /usr/local/bin/ocr-worker-python \
  && /usr/local/bin/ocr-worker-python -c "import runpod, PIL.Image; print('interpreter + deps OK')" \
- && /usr/local/bin/ocr-worker-python -c "import handler; print('handler imports OK')"
+ && /usr/local/bin/ocr-worker-python -c "import handler; print('handler imports OK')" \
+ && /usr/local/bin/ocr-worker-python -c "import os; from transformers import AutoConfig; AutoConfig.from_pretrained(os.environ['MODEL_NAME'], trust_remote_code=True); print('model configuration imports OK')"
 
 ENTRYPOINT []
 CMD ["/usr/local/bin/ocr-worker-python", "-u", "/app/handler.py"]
