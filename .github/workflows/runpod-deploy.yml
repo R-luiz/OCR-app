@@ -191,6 +191,7 @@ jobs:
           python - "$ENDPOINT_ID" <<'PY'
           import json
           import os
+          import re
           import subprocess
           import sys
 
@@ -230,7 +231,33 @@ jobs:
               "pulling image": "image pull started",
               "initialization timeout": "initialization timeout",
               "nvidia-container-cli": "Nvidia container startup error",
+              "no space left on device": "insufficient disk space",
+              "no kernel image is available": "CUDA kernel unavailable for this GPU",
+              "unsupported compute capability": "GPU architecture unsupported",
+              "driver version is insufficient": "CUDA driver incompatible",
+              "no cuda gpus are available": "CUDA device missing",
+              "failed to infer device type": "vLLM device detection failed",
+              "no available memory for the cache blocks": "insufficient KV cache memory",
+              "no available kv cache memory": "insufficient KV cache memory",
+              "higher than the maximum number of tokens that can be stored in kv cache": "context exceeds KV cache capacity",
+              "model architectures": "model architecture registration",
+              "engine core initialization failed": "vLLM engine startup failed",
+              "cuda error": "CUDA error",
+              "cannot import name": "Python import incompatibility",
+              "undefined symbol": "incompatible shared library",
+              "cannot open shared object file": "missing shared library",
+              "localentrynotfounderror": "missing offline model file",
+              "can't load tokenizer": "tokenizer unavailable",
+              "not supported on this device": "GPU feature unsupported",
+              "pydantic_core": "configuration validation",
+              "can't pickle": "vLLM process serialization failed",
           }
+          frame = re.compile(
+              r'File "/[^"]*?/?((?:app|vllm|torch|transformers|transformers_modules|'
+              r'runpod|pydantic|huggingface_hub|flashinfer)/[A-Za-z0-9_./-]+\.py)", '
+              r'line (\d+), in ([A-Za-z0-9_<>]+)'
+          )
+          error = re.compile(r"\b([A-Z][A-Za-z_0-9]*(?:Error|Exception)):")
           for worker in state["workers"]:
               fields = ("id", "status", "isStale", "version", "image", "gpuTypeId", "uptimeSeconds")
               print(json.dumps({key: worker.get(key) for key in fields}))
@@ -240,11 +267,30 @@ jobs:
                    f"https://api.runpod.io{path}/{worker['id']}/logs?tail=120"],
                   capture_output=True, text=True,
               )
-              stages = {label for line in result.stdout.lower().splitlines() if line.startswith("data:")
-                        for marker, label in markers.items() if marker in line}
+              lines = []
+              for entry in result.stdout.splitlines():
+                  if not entry.startswith("data:"):
+                      continue
+                  try:
+                      event = json.loads(entry[5:])
+                  except json.JSONDecodeError:  # The stream may end mid-event at curl's deadline.
+                      continue
+                  if event.get("source") in ("container", "system"):
+                      lines.extend(event["line"].splitlines())
+              lower_lines = [line.lower() for line in lines]
+              stages = {label for marker, label in markers.items()
+                        if any(marker in line for line in lower_lines)}
+              frames = list(dict.fromkeys(":".join(match.groups()) for line in lines
+                                          if (match := frame.search(line))))
+              errors = sorted({match[1] for line in lines for match in error.finditer(line)})
               status = result.stdout.rpartition("\nHTTP ")[2].strip()
               print("Worker log stream HTTP:", status if status.isascii() and status.isdigit() else "unknown")
               print("Worker stages:", ", ".join(sorted(stages)) or "none visible")
+              print("Worker log line count:", len(lines))
+              if errors:
+                  print("Worker exception types:", ", ".join(errors))
+              if frames:
+                  print("Worker traceback frames:", ", ".join(frames[-20:]))
           PY
 
       - name: Cancel one job
