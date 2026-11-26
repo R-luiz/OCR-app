@@ -261,10 +261,12 @@ jobs:
           for worker in state["workers"]:
               fields = ("id", "status", "isStale", "version", "image", "gpuTypeId", "uptimeSeconds")
               print(json.dumps({key: worker.get(key) for key in fields}))
+              if worker.get("isStale"):
+                  continue
               result = subprocess.run(
                   ["curl", "-fsS", "--max-time", "8", "--write-out", "\nHTTP %{http_code}\n", "-H",
                    f"Authorization: Bearer {os.environ['RUNPOD_API_KEY']}",
-                   f"https://api.runpod.io{path}/{worker['id']}/logs?tail=120"],
+                   f"https://api.runpod.io{path}/{worker['id']}/logs?tail=2000"],
                   capture_output=True, text=True,
               )
               lines = []
