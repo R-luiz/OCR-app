@@ -266,7 +266,7 @@ jobs:
               result = subprocess.run(
                   ["curl", "-fsS", "--max-time", "8", "--write-out", "\nHTTP %{http_code}\n", "-H",
                    f"Authorization: Bearer {os.environ['RUNPOD_API_KEY']}",
-                   f"https://api.runpod.io{path}/{worker['id']}/logs?tail=2000"],
+                   f"https://api.runpod.io{path}/{worker['id']}/logs?source=container&tail=2000"],
                   capture_output=True, text=True,
               )
               lines = []
