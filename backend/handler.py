@@ -48,6 +48,8 @@ from PIL import Image
 import postprocess
 
 MODEL_NAME = os.environ.get("MODEL_NAME", "baidu/Unlimited-OCR")
+# The checkpoint calls its model type "unlimited_ocr"; vLLM registers "unlimited-ocr".
+VLLM_MODEL_TYPE = "unlimited-ocr"
 MAX_MODEL_LEN = int(os.environ.get("MAX_MODEL_LEN", "32768"))
 GPU_MEMORY_UTILIZATION = float(os.environ.get("GPU_MEMORY_UTILIZATION", "0.85"))
 MAX_PAGES = int(os.environ.get("MAX_PAGES", "64"))
@@ -310,7 +312,8 @@ def get_engine():
 
         _engine = LLM(
             model=MODEL_NAME,
-            trust_remote_code=True,
+            trust_remote_code=False,
+            hf_overrides={"model_type": VLLM_MODEL_TYPE},
             dtype="bfloat16",
             max_model_len=MAX_MODEL_LEN,
             gpu_memory_utilization=GPU_MEMORY_UTILIZATION,

@@ -44,7 +44,7 @@ COPY handler.py postprocess.py /app/
 RUN ln -sf "$(command -v python3)" /usr/local/bin/ocr-worker-python \
  && /usr/local/bin/ocr-worker-python -c "import runpod, PIL.Image; print('interpreter + deps OK')" \
  && /usr/local/bin/ocr-worker-python -c "import handler; print('handler imports OK')" \
- && /usr/local/bin/ocr-worker-python -c "import os; from transformers import AutoConfig; AutoConfig.from_pretrained(os.environ['MODEL_NAME'], trust_remote_code=True); print('model configuration imports OK')"
+ && /usr/local/bin/ocr-worker-python -c "from handler import MODEL_NAME, VLLM_MODEL_TYPE; from vllm.transformers_utils.config import get_config; from vllm.transformers_utils.configs.unlimited_ocr import UnlimitedOCRConfig; config = get_config(MODEL_NAME, trust_remote_code=False, hf_overrides_kw={'model_type': VLLM_MODEL_TYPE}); assert isinstance(config, UnlimitedOCRConfig); print('native OCR model configuration OK')"
 
 ENTRYPOINT []
 CMD ["/usr/local/bin/ocr-worker-python", "-u", "/app/handler.py"]

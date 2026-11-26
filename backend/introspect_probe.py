@@ -56,7 +56,7 @@ def dump_config() -> None:
 def dump_tokenizer() -> None:
     from transformers import AutoTokenizer
 
-    tok = AutoTokenizer.from_pretrained(MODEL, trust_remote_code=True)
+    tok = AutoTokenizer.from_pretrained(MODEL, trust_remote_code=False)
     for probe in ("<image>", "<image><image>", "<image>\n<image>"):
         print(f"tokenize {probe!r}:", tok(probe, add_special_tokens=False)["input_ids"])
     print("image-ish special tokens:",
