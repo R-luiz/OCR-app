@@ -82,6 +82,11 @@ container image pull and model startup, not OCR execution. After changing
 only host placement, use `recycle-workers` if an idle worker remains on
 the previous hardware; the command refuses while a worker is processing jobs.
 
+If a worker fails before taking a job, `diagnose-startup` runs a smoke test
+against the current image with model loading inside the request, then restores
+the endpoint's original worker environment. Pass the endpoint ID and
+`smoke_test_pages=2` to exercise the same two-page PDF.
+
 To build an image yourself:
 
 ```bash
@@ -91,6 +96,9 @@ docker push <registry>/unlimited-ocr-worker:latest
 
 On Hopper GPUs, use
 `--build-arg BASE_IMAGE=vllm/vllm-openai:unlimited-ocr-cu129`.
+The worker uses vLLM's native Unlimited-OCR configuration rather than executing
+the checkpoint's Transformers modeling code. The image build checks that this
+configuration loads offline, before publishing the image.
 
 ### Worker contract
 
