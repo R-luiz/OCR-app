@@ -126,21 +126,28 @@ def deploy(runpod, args) -> str:
         endpoint_id = existing["id"]
         print(f"updating {ENDPOINT_NAME} ({endpoint_id}) to {args.image}")
         worker_settings = {"max": args.workers_max}
+        if args.init_timeout is not None:
+            worker_settings["initTimeout"] = args.init_timeout
         if existing["scaling"]["type"] == "QUEUE_DELAY":
             worker_settings["idleTimeout"] = args.idle_timeout
-        saved = _patch_endpoint(endpoint_id, {
+        changes = {
             "image": args.image,
             "disk": args.container_disk_gb,
             "workers": worker_settings,
             "flashboot": "FLASHBOOT",
-        })
+        }
+        if args.gpu_ids:
+            changes["gpu"] = {"pools": [pool.strip() for pool in args.gpu_ids.split(",")]}
+        saved = _patch_endpoint(endpoint_id, changes)
         if saved.get("image") != args.image:
             raise DeployError(f"endpoint {endpoint_id} did not confirm image {args.image}")
         workers = saved["workers"]
         print(
             f"  image {saved['image']}, workers {workers['min']}..{workers['max']}, "
-            f"idleTimeout {workers.get('idleTimeout')}s, flashboot {saved['flashboot']}",
+            f"idleTimeout {workers.get('idleTimeout')}s, initTimeout {workers.get('initTimeout')}s, "
+            f"flashboot {saved['flashboot']}",
         )
+        print(f"  GPU pools: {', '.join(saved['gpu']['pools'])}")
         return endpoint_id
 
     print(f"creating template from image {args.image}")
@@ -153,18 +160,22 @@ def deploy(runpod, args) -> str:
     template_id = template["id"]
     print(f"template {template_id}")
 
-    print(f"creating endpoint {ENDPOINT_NAME} on {args.gpu_ids}")
+    gpu_ids = args.gpu_ids or DEFAULT_GPU_IDS
+    print(f"creating endpoint {ENDPOINT_NAME} on {gpu_ids}")
     endpoint = runpod.create_endpoint(
         name=ENDPOINT_NAME,
         template_id=template_id,
-        gpu_ids=args.gpu_ids,
+        gpu_ids=gpu_ids,
         network_volume_id=args.network_volume_id,
         idle_timeout=args.idle_timeout,
         workers_min=0,
         workers_max=args.workers_max,
         flashboot=True,
     )
-    return endpoint["id"]
+    endpoint_id = endpoint["id"]
+    if args.init_timeout is not None:
+        _patch_endpoint(endpoint_id, {"workers": {"initTimeout": args.init_timeout}})
+    return endpoint_id
 
 
 def smoke_test(
@@ -461,7 +472,7 @@ def purge_queue(endpoint_id: str, api_key: str) -> int:
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--image", default=DEFAULT_IMAGE)
-    parser.add_argument("--gpu-ids", default=DEFAULT_GPU_IDS)
+    parser.add_argument("--gpu-ids", help="comma-separated GPU pools; defaults to the existing selection")
     parser.add_argument("--network-volume-id", default=os.environ.get("RUNPOD_NETWORK_VOLUME_ID") or None)
     parser.add_argument("--container-disk-gb", type=int, default=DEFAULT_CONTAINER_DISK_GB)
     # A cold start on this endpoint is ~5 minutes: an ~8.8 GB image pull plus a
@@ -470,6 +481,7 @@ def main() -> int:
     # the worker for 5 minutes means one wait per sitting instead of one per scan,
     # at the cost of billing up to 5 idle GPU-minutes after each use.
     parser.add_argument("--idle-timeout", type=int, default=300)
+    parser.add_argument("--init-timeout", type=int, help="seconds allowed for worker initialization")
     parser.add_argument("--workers-max", type=int, default=1)
     parser.add_argument("--dry-run", action="store_true", help="inspect the account, create nothing")
     parser.add_argument(
@@ -559,7 +571,7 @@ def main() -> int:
             return 1
         print(f"\nwould deploy {args.image}")
         print(f"  endpoint name     {ENDPOINT_NAME}")
-        print(f"  gpu               {args.gpu_ids}")
+        print(f"  gpu               {args.gpu_ids or f'(unchanged; new: {DEFAULT_GPU_IDS})'}")
         print(f"  container disk    {args.container_disk_gb} GB")
         print(f"  network volume    {args.network_volume_id or '(none — not required; weights are baked into the image)'}")
         print(f"  idle timeout      {args.idle_timeout}s")

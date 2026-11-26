@@ -100,6 +100,7 @@ def rest_endpoint(monkeypatch, fake_runpod):
         assert (method, path) == ("PATCH", "/v2/serverless/abc123")
         changes = dict(json)
         endpoint["workers"].update(changes.pop("workers"))
+        endpoint["gpu"].update(changes.pop("gpu", {}))
         endpoint.update(changes)
         return endpoint
 
@@ -119,6 +120,18 @@ def test_deploy_updates_existing_rest_endpoint_without_recreating_it(monkeypatch
     assert rest_endpoint["flashboot"] == "FLASHBOOT"
     assert rest_endpoint["gpu"] == {"pools": ["ADA_48_PRO"], "count": 1}
     assert rest_endpoint["networkVolumes"] == ["volume-1"]
+
+
+def test_deploy_can_move_existing_endpoint_to_a_different_gpu_pool(monkeypatch, rest_endpoint):
+    rest_endpoint["gpu"] = {"pools": ["BLACKWELL_48"], "count": 1, "minCudaVersion": "13.0"}
+
+    assert run_main(
+        monkeypatch, "--confirm", "--gpu-ids", "ADA_48_PRO, AMPERE_48", "--init-timeout", "720",
+    ) == 0
+    assert rest_endpoint["gpu"] == {
+        "pools": ["ADA_48_PRO", "AMPERE_48"], "count": 1, "minCudaVersion": "13.0",
+    }
+    assert rest_endpoint["workers"]["initTimeout"] == 720
 
 
 def test_deploy_keeps_request_count_scaling(monkeypatch, rest_endpoint):

@@ -35,6 +35,14 @@ on:
         description: "Seconds to hold a worker after a job (default 300). Higher = fewer cold starts, more idle GPU billed"
         type: string
         required: false
+      gpu_ids:
+        description: "Override the GPU pools with a comma-separated list (deploy actions only)"
+        type: string
+        required: false
+      init_timeout:
+        description: "Seconds allowed to pull the image and initialize the worker (deploy actions only)"
+        type: string
+        required: false
 
 jobs:
   deploy:
@@ -116,10 +124,13 @@ jobs:
         env:
           RUNPOD_API_KEY: ${{ secrets.RUNPOD_API_KEY }}
           RUNPOD_NETWORK_VOLUME_ID: ${{ inputs.network_volume_id }}
+          GPU_IDS: ${{ inputs.gpu_ids }}
+          IDLE: ${{ inputs.idle_timeout }}
+          INIT_TIMEOUT: ${{ inputs.init_timeout }}
         run: |
-          IDLE="${{ inputs.idle_timeout }}"
           python backend/deploy_runpod.py --confirm --image "$IMAGE" \
-            ${IDLE:+--idle-timeout "$IDLE"}
+            ${IDLE:+--idle-timeout "$IDLE"} ${GPU_IDS:+--gpu-ids "$GPU_IDS"} \
+            ${INIT_TIMEOUT:+--init-timeout "$INIT_TIMEOUT"}
 
       # Submit fixture pages to the deployed endpoint; CI has no GPU of its own.
       - name: Deploy and smoke test
@@ -129,6 +140,8 @@ jobs:
           RUNPOD_NETWORK_VOLUME_ID: ${{ inputs.network_volume_id }}
           PAGES: ${{ inputs.smoke_test_pages }}
           IDLE: ${{ inputs.idle_timeout }}
+          GPU_IDS: ${{ inputs.gpu_ids }}
+          INIT_TIMEOUT: ${{ inputs.init_timeout }}
         run: |
           if [ -z "$PAGES" ]; then PAGES=1; fi
           FIXTURES=android/app/src/androidTest/assets
@@ -150,7 +163,8 @@ jobs:
           python -u backend/deploy_runpod.py --confirm --image "$IMAGE" \
             --smoke-test "${IMAGES[@]}" \
             --smoke-test-pages "$PAGES" \
-            ${IDLE:+--idle-timeout "$IDLE"}
+            ${IDLE:+--idle-timeout "$IDLE"} ${GPU_IDS:+--gpu-ids "$GPU_IDS"} \
+            ${INIT_TIMEOUT:+--init-timeout "$INIT_TIMEOUT"}
 
       # Read-only: no job submitted, no GPU spent. The fast way to tell "worker
       # is still cold-starting" apart from "no worker is being scheduled at all".
@@ -170,7 +184,10 @@ jobs:
 
           from runpod.api.rest import run_rest_request
 
-          path = f"/v2/serverless/{sys.argv[1]}/workers"
+          endpoint_path = f"/v2/serverless/{sys.argv[1]}"
+          endpoint = run_rest_request("GET", endpoint_path)
+          print("Placement:", json.dumps({"gpu": endpoint["gpu"], "workers": endpoint["workers"]}))
+          path = f"{endpoint_path}/workers"
           state = run_rest_request("GET", path)
           print(f"Endpoint version: {state.get('endpointVersion')}")
           # Public Actions logs: report stage markers, never raw container logs.
@@ -186,18 +203,22 @@ jobs:
               "error fetching job": "job fetch failed",
               "error getting job": "job fetch failed",
               "pulling image": "image pull started",
+              "initialization timeout": "initialization timeout",
+              "nvidia-container-cli": "Nvidia container startup error",
           }
           for worker in state["workers"]:
               fields = ("id", "status", "isStale", "version", "image", "gpuTypeId", "uptimeSeconds")
               print(json.dumps({key: worker.get(key) for key in fields}))
               result = subprocess.run(
-                  ["curl", "-fsS", "--max-time", "8", "-H",
+                  ["curl", "-fsS", "--max-time", "8", "--write-out", "\nHTTP %{http_code}\n", "-H",
                    f"Authorization: Bearer {os.environ['RUNPOD_API_KEY']}",
                    f"https://api.runpod.io{path}/{worker['id']}/logs?tail=120"],
                   capture_output=True, text=True,
               )
               stages = {label for line in result.stdout.lower().splitlines() if line.startswith("data:")
                         for marker, label in markers.items() if marker in line}
+              status = result.stdout.rpartition("\nHTTP ")[2].strip()
+              print("Worker log stream HTTP:", status if status.isascii() and status.isdigit() else "unknown")
               print("Worker stages:", ", ".join(sorted(stages)) or "none visible")
           PY
 
