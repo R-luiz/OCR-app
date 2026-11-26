@@ -10,8 +10,7 @@ RUNPOD_API_KEY and this script does the rest.
     python deploy_runpod.py --confirm --smoke-test path/to/page.png
 
 Idempotent by endpoint name: if an endpoint called ocr-app-unlimited-ocr already
-exists, its template is repointed at the current image instead of a second
-billable endpoint being created.
+exists, it is updated in place instead of creating another billable endpoint.
 """
 
 from __future__ import annotations
@@ -123,42 +122,36 @@ def summarize_account(runpod) -> None:
 def deploy(runpod, args) -> str:
     existing = find_endpoint(runpod, ENDPOINT_NAME)
 
+    if existing:
+        endpoint_id = existing["id"]
+        print(f"updating {ENDPOINT_NAME} ({endpoint_id}) to {args.image}")
+        worker_settings = {"max": args.workers_max}
+        if existing["scaling"]["type"] == "QUEUE_DELAY":
+            worker_settings["idleTimeout"] = args.idle_timeout
+        saved = _patch_endpoint(endpoint_id, {
+            "image": args.image,
+            "disk": args.container_disk_gb,
+            "workers": worker_settings,
+            "flashboot": "FLASHBOOT",
+        })
+        if saved.get("image") != args.image:
+            raise DeployError(f"endpoint {endpoint_id} did not confirm image {args.image}")
+        workers = saved["workers"]
+        print(
+            f"  image {saved['image']}, workers {workers['min']}..{workers['max']}, "
+            f"idleTimeout {workers.get('idleTimeout')}s, flashboot {saved['flashboot']}",
+        )
+        return endpoint_id
+
     print(f"creating template from image {args.image}")
     template = runpod.create_template(
         name=f"{TEMPLATE_NAME}-{int(time.time())}",
         image_name=args.image,
         is_serverless=True,
         container_disk_in_gb=args.container_disk_gb,
-        # MODEL_NAME/HF_HUB_OFFLINE are baked into the image itself (it points at the
-        # local weights snapshot dir); overriding MODEL_NAME here would silently send
-        # the worker back to downloading baidu/Unlimited-OCR from the Hub at startup.
-        env={
-            "MAX_MODEL_LEN": "32768",
-        },
     )
     template_id = template["id"]
     print(f"template {template_id}")
-
-    if existing:
-        endpoint_id = existing["id"]
-        print(f"endpoint {ENDPOINT_NAME} already exists ({endpoint_id}); repointing it")
-        runpod.update_endpoint_template(endpoint_id=endpoint_id, template_id=template_id)
-        # update_endpoint_template touches only the template, so an existing endpoint
-        # keeps whatever idle timeout and FlashBoot setting it happens to carry —
-        # including a FlashBoot that an earlier recycle-workers run cleared. Re-save
-        # so a deploy actually converges the endpoint on the configuration this
-        # script asks for, rather than only on the image.
-        saved = _save_endpoint(
-            _find_endpoint_by_id(runpod, endpoint_id),
-            workers_max=args.workers_max,
-            idle_timeout=args.idle_timeout,
-        )
-        print(
-            f"  idleTimeout {saved.get('idleTimeout')}s, "
-            f"flashBoot {saved.get('flashBootType')}, "
-            f"workersMax {saved.get('workersMax')}",
-        )
-        return endpoint_id
 
     print(f"creating endpoint {ENDPOINT_NAME} on {args.gpu_ids}")
     endpoint = runpod.create_endpoint(
@@ -177,26 +170,24 @@ def deploy(runpod, args) -> str:
 def smoke_test(
     endpoint_id: str,
     api_key: str,
-    image_path: str,
+    image_paths: list[str],
     timeout: int,
     pages: int = 1,
 ) -> int:
-    """Submit real pages and wait for markdown — the proof that inference works.
-
-    ``pages`` above 1 repeats the image to exercise the multi-page path, which is a
-    genuinely different branch: one long-context generate() call per window of pages,
-    a different prompt, and a much larger request body. Testing only a single page left
-    that path unverified while the app used it for every PDF.
-    """
+    """Submit real pages in order and require Markdown for every page."""
     import urllib.error
     import urllib.request
 
-    mime = mimetypes.guess_type(image_path)[0] or "image/png"
-    with open(image_path, "rb") as handle:
-        encoded = base64.b64encode(handle.read()).decode()
+    data_urls = []
+    for image_path in image_paths:
+        mime = mimetypes.guess_type(image_path)[0] or "image/png"
+        with open(image_path, "rb") as handle:
+            encoded = base64.b64encode(handle.read()).decode()
+        data_urls.append(f"data:{mime};base64,{encoded}")
 
-    data_url = f"data:{mime};base64,{encoded}"
-    payload = {"input": {"images": [data_url] * pages}}
+    pages = max(pages, len(data_urls))
+    images = [data_urls[index % len(data_urls)] for index in range(pages)]
+    payload = {"input": {"images": images}}
     body_mb = len(json.dumps(payload)) / (1024 * 1024)
     print(f"pages={pages}, request body ~{body_mb:.1f} MB")
     base = f"https://api.runpod.ai/v2/{endpoint_id}"
@@ -214,14 +205,14 @@ def smoke_test(
         with urllib.request.urlopen(request, timeout=120) as response:
             return json.loads(response.read())
 
-    print(f"submitting {image_path} to {endpoint_id}")
+    print(f"submitting {pages} page(s) to {endpoint_id}")
     job = post(f"{base}/run", payload)
     job_id = job.get("id")
     if not job_id:
         print(f"FAIL: no job id in {job}", file=sys.stderr)
         return 1
 
-    print(f"job {job_id}; first run pulls ~8.8 GB of image and 6.7 GB of weights")
+    print(f"job {job_id}")
     deadline = time.monotonic() + timeout
     last_status = None
     while time.monotonic() < deadline:
@@ -281,6 +272,7 @@ def smoke_test(
         )
         return 1
 
+    print(f"Runpod timing (ms): delay={job.get('delayTime')}, execution={job.get('executionTime')}")
     print(f"OK — {len(markdown)} chars of markdown across {len(returned)} pages\n")
     print(markdown[:2000])
     return 0
@@ -379,50 +371,11 @@ def _find_endpoint_by_id(runpod, endpoint_id: str) -> dict:
     raise DeployError(f"endpoint {endpoint_id} not found on this account")
 
 
-def _save_endpoint(
-    endpoint: dict,
-    workers_max: int,
-    idle_timeout: int | None = None,
-) -> dict:
-    """Re-saves an endpoint with a new workersMax, leaving everything else as-is.
+def _patch_endpoint(endpoint_id: str, changes: dict) -> dict:
+    """Update only the supplied fields; preserve GPU, scaling and storage settings."""
+    from runpod.api.rest import run_rest_request
 
-    saveEndpoint replaces the whole input object rather than patching it, so every
-    field is re-sent from the values the API just returned for this endpoint — the
-    same field set runpod's own create_endpoint sends, plus ``id`` to target the
-    existing record. Anything omitted here would be cleared, hence the round trip.
-
-    ``flashBootType`` is the exception: it is set unconditionally rather than round
-    tripped, because RunPod's endpoint query does not return it. Omitting it, which
-    is what this function used to do, meant every recycle-workers run silently
-    turned FlashBoot off — the one setting that keeps cold starts short on an
-    endpoint whose image is ~8.8 GB. A cold start is the single longest wait the
-    app ever shows, so losing this is expensive and invisible.
-    """
-    from runpod.api.graphql import run_graphql_query
-
-    fields = [
-        "flashBootType: FLASHBOOT",
-        f'id: "{endpoint["id"]}"',
-        f'name: "{endpoint["name"]}"',
-        f'templateId: "{endpoint["templateId"]}"',
-        f'gpuIds: "{endpoint["gpuIds"]}"',
-        f'networkVolumeId: "{endpoint.get("networkVolumeId") or ""}"',
-        f'locations: "{endpoint.get("locations") or ""}"',
-        f"idleTimeout: {int(idle_timeout if idle_timeout is not None else endpoint['idleTimeout'])}",
-        f'scalerType: "{endpoint["scalerType"]}"',
-        f"scalerValue: {int(endpoint['scalerValue'])}",
-        f"workersMin: {int(endpoint['workersMin'])}",
-        f"workersMax: {int(workers_max)}",
-    ]
-    if endpoint.get("gpuCount") is not None:
-        fields.append(f"gpuCount: {int(endpoint['gpuCount'])}")
-
-    mutation = (
-        "mutation { saveEndpoint(input: { "
-        + ", ".join(fields)
-        + " }) { id name templateId workersMin workersMax idleTimeout flashBootType } }"
-    )
-    return run_graphql_query(mutation)["data"]["saveEndpoint"]
+    return run_rest_request("PATCH", f"/v2/serverless/{endpoint_id}", json=changes)
 
 
 def _worker_counts(endpoint_id: str, api_key: str) -> dict:
@@ -440,35 +393,30 @@ def _worker_counts(endpoint_id: str, api_key: str) -> dict:
 def recycle_workers(runpod, endpoint_id: str, api_key: str, timeout: int = 300) -> int:
     """Drains the endpoint's workers so the next request starts a fresh container.
 
-    Repointing an endpoint at a new template does not restart the workers already
-    running on the old one: a warm worker keeps serving its existing container, so a
-    deploy can look successful while every request still runs the previous image.
-    That is exactly what happened here — three deploys in a row answered from the
-    same workerId, one of them 419 ms after submission, still raising the error the
-    new image fixes. Scaling to zero terminates them; restoring the limit lets the
-    next request provision one from the current template.
+    Workers already serving on the old release can continue using it during a
+    rollout. Scaling the endpoint to zero stops those workers; restoring the
+    limits lets the next request provision one from the current release.
     """
-    endpoint = _find_endpoint_by_id(runpod, endpoint_id)
-    original_max = int(endpoint["workersMax"])
-    print(f"endpoint {endpoint_id}: workersMax {original_max} -> 0 (draining)")
+    workers = _find_endpoint_by_id(runpod, endpoint_id)["workers"]
+    original_limits = {"min": workers["min"], "max": workers["max"]}
+    print(f"endpoint {endpoint_id}: workersMax {workers['max']} -> 0 (draining)")
 
-    _save_endpoint(endpoint, workers_max=0)
+    _patch_endpoint(endpoint_id, {"workers": {"min": 0, "max": 0}})
 
     deadline = time.monotonic() + timeout
     drained = False
-    while time.monotonic() < deadline:
-        counts = _worker_counts(endpoint_id, api_key)
-        total = sum(int(v) for v in counts.values())
-        print(f"  workers: {counts} (total {total})")
-        if total == 0:
-            drained = True
-            break
-        time.sleep(POLL_INTERVAL_SECONDS)
-
-    # Restore the limit even if draining timed out: leaving workersMax at 0 would
-    # silently disable the endpoint entirely.
-    print(f"restoring workersMax to {original_max}")
-    _save_endpoint(_find_endpoint_by_id(runpod, endpoint_id), workers_max=original_max)
+    try:
+        while time.monotonic() < deadline:
+            counts = _worker_counts(endpoint_id, api_key)
+            total = sum(int(v) for v in counts.values())
+            print(f"  workers: {counts} (total {total})")
+            if total == 0:
+                drained = True
+                break
+            time.sleep(POLL_INTERVAL_SECONDS)
+    finally:
+        print(f"restoring worker limits to {original_limits['min']}..{original_limits['max']}")
+        _patch_endpoint(endpoint_id, {"workers": original_limits})
 
     if not drained:
         print(
@@ -529,13 +477,13 @@ def main() -> int:
         action="store_true",
         help="required to create or modify anything; this provisions billable GPU capacity",
     )
-    parser.add_argument("--smoke-test", metavar="IMAGE", help="after deploying, OCR this page")
+    parser.add_argument("--smoke-test", nargs="+", metavar="IMAGE", help="after deploying, OCR these pages")
     parser.add_argument("--smoke-test-timeout", type=int, default=1800)
     parser.add_argument(
         "--smoke-test-pages",
         type=int,
         default=1,
-        help="repeat the page this many times; >1 exercises the multi-page path",
+        help="minimum pages to send; repeat the supplied pages in order if needed",
     )
     parser.add_argument(
         "--health-check",

@@ -1,9 +1,4 @@
-"""Tests for the argument dispatch in deploy_runpod.py.
-
-These cover the read-only actions specifically, because the failure mode there is
-silent: a health check that never contacted the endpoint still exited 0 and turned
-the CI job green. Nothing here touches the network — the `runpod` SDK is stubbed.
-"""
+"""Deployment CLI contracts against stubbed Runpod responses, without network access."""
 
 from __future__ import annotations
 
@@ -87,52 +82,65 @@ def test_no_read_only_flag_reaches_the_dry_run(monkeypatch, fake_runpod):
     assert run_main(monkeypatch) == 0
 
 
-ENDPOINT = {
-    "id": "abc123",
-    "name": deploy_runpod.ENDPOINT_NAME,
-    "templateId": "tpl1",
-    "gpuIds": "ADA_48_PRO",
-    "networkVolumeId": None,
-    "locations": None,
-    "idleTimeout": 60,
-    "scalerType": "QUEUE_DELAY",
-    "scalerValue": 4,
-    "workersMin": 0,
-    "workersMax": 1,
-}
-
-
 @pytest.fixture
-def captured_mutation(monkeypatch):
-    """Captures the GraphQL string _save_endpoint sends, without sending it."""
-    sent: list[str] = []
+def rest_endpoint(monkeypatch, fake_runpod):
+    endpoint = {
+        "id": "abc123",
+        "name": deploy_runpod.ENDPOINT_NAME,
+        "image": "registry/worker:old",
+        "gpu": {"pools": ["ADA_48_PRO"], "count": 1},
+        "networkVolumes": ["volume-1"],
+        "workers": {"min": 0, "max": 2, "idleTimeout": 60, "initTimeout": 120},
+        "scaling": {"type": "QUEUE_DELAY", "queueDelay": 4},
+        "flashboot": "OFF",
+    }
+    fake_runpod.get_endpoints = lambda: [endpoint]
 
-    graphql = types.ModuleType("runpod.api.graphql")
-    graphql.run_graphql_query = lambda mutation: (
-        sent.append(mutation) or {"data": {"saveEndpoint": {"id": "abc123"}}}
-    )
-    monkeypatch.setitem(sys.modules, "runpod.api.graphql", graphql)
-    return sent
+    def patch(method, path, *, json):
+        assert (method, path) == ("PATCH", "/v2/serverless/abc123")
+        changes = dict(json)
+        endpoint["workers"].update(changes.pop("workers"))
+        endpoint.update(changes)
+        return endpoint
 
-
-def test_save_endpoint_always_sets_flashboot(captured_mutation):
-    """saveEndpoint replaces its whole input rather than patching it, and RunPod's
-    endpoint query never returns flashBootType — so a save that omits it silently
-    turns FlashBoot off. That happened on every recycle-workers run, and FlashBoot is
-    what keeps the cold start on an ~8.8 GB image from being the app's longest wait."""
-    deploy_runpod._save_endpoint(dict(ENDPOINT), workers_max=1)
-
-    assert "flashBootType: FLASHBOOT" in captured_mutation[0]
-
-
-def test_save_endpoint_can_change_the_idle_timeout(captured_mutation):
-    deploy_runpod._save_endpoint(dict(ENDPOINT), workers_max=1, idle_timeout=300)
-
-    assert "idleTimeout: 300" in captured_mutation[0]
+    rest = types.ModuleType("runpod.api.rest")
+    rest.run_rest_request = patch
+    monkeypatch.setitem(sys.modules, "runpod.api.rest", rest)
+    return endpoint
 
 
-def test_save_endpoint_keeps_the_existing_idle_timeout_by_default(captured_mutation):
-    """Draining workers must not quietly rewrite unrelated configuration."""
-    deploy_runpod._save_endpoint(dict(ENDPOINT), workers_max=0)
+def test_deploy_updates_existing_rest_endpoint_without_recreating_it(monkeypatch, rest_endpoint):
+    assert run_main(
+        monkeypatch, "--confirm", "--image", "registry/worker:release", "--idle-timeout", "180",
+    ) == 0
+    assert rest_endpoint["image"] == "registry/worker:release"
+    assert rest_endpoint["disk"] == 80
+    assert rest_endpoint["workers"] == {"min": 0, "max": 1, "idleTimeout": 180, "initTimeout": 120}
+    assert rest_endpoint["flashboot"] == "FLASHBOOT"
+    assert rest_endpoint["gpu"] == {"pools": ["ADA_48_PRO"], "count": 1}
+    assert rest_endpoint["networkVolumes"] == ["volume-1"]
 
-    assert "idleTimeout: 60" in captured_mutation[0]
+
+def test_deploy_keeps_request_count_scaling(monkeypatch, rest_endpoint):
+    rest_endpoint["scaling"] = {"type": "REQUEST_COUNT", "requestCount": 2}
+    del rest_endpoint["workers"]["idleTimeout"]
+
+    assert run_main(monkeypatch, "--confirm") == 0
+    assert rest_endpoint["scaling"] == {"type": "REQUEST_COUNT", "requestCount": 2}
+    assert "idleTimeout" not in rest_endpoint["workers"]
+
+
+def test_recycle_restores_limits_when_health_check_fails(monkeypatch, rest_endpoint):
+    rest_endpoint["workers"]["min"] = 1
+
+    def failed_health(*args):
+        workers = rest_endpoint["workers"]
+        assert (workers["min"], workers["max"]) == (0, 0)
+        raise OSError("unreachable")
+
+    monkeypatch.setattr(deploy_runpod, "_worker_counts", failed_health)
+    with pytest.raises(OSError, match="unreachable"):
+        run_main(monkeypatch, "--recycle-workers", "abc123")
+
+    assert rest_endpoint["workers"] == {"min": 1, "max": 2, "idleTimeout": 60, "initTimeout": 120}
+    assert rest_endpoint["flashboot"] == "OFF"

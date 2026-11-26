@@ -16,7 +16,7 @@ on:
           - recycle-workers
         default: dry-run
       network_volume_id:
-        description: "Network volume ID (strongly recommended — without one, every cold start re-downloads ~6.7 GB of weights)"
+        description: "Optional network volume for a new endpoint. The image already contains the model weights."
         type: string
         required: false
       endpoint_id:
@@ -48,7 +48,7 @@ jobs:
           python-version: "3.12"
 
       - name: Install dependencies
-        run: pip install runpod
+        run: pip install 'runpod>=2.4.0,<3'
 
       # Deploying ":latest" is not safe here. It is mutable, so the tag can still point
       # at the previous build while a rebuild is in flight, and a warm RunPod worker will
@@ -121,19 +121,34 @@ jobs:
           python backend/deploy_runpod.py --confirm --image "$IMAGE" \
             ${IDLE:+--idle-timeout "$IDLE"}
 
-      # Deploys, then submits a real page and waits for markdown. This is the
-      # first time Unlimited-OCR actually runs — CI has no GPU of its own.
+      # Submit fixture pages to the deployed endpoint; CI has no GPU of its own.
       - name: Deploy and smoke test
         if: inputs.action == 'deploy-and-smoke-test'
         env:
           RUNPOD_API_KEY: ${{ secrets.RUNPOD_API_KEY }}
           RUNPOD_NETWORK_VOLUME_ID: ${{ inputs.network_volume_id }}
+          PAGES: ${{ inputs.smoke_test_pages }}
+          IDLE: ${{ inputs.idle_timeout }}
         run: |
-          PAGES="${{ inputs.smoke_test_pages }}"
           if [ -z "$PAGES" ]; then PAGES=1; fi
-          IDLE="${{ inputs.idle_timeout }}"
-          python backend/deploy_runpod.py --confirm --image "$IMAGE" \
-            --smoke-test android/app/src/androidTest/assets/sample_page.png \
+          FIXTURES=android/app/src/androidTest/assets
+          IMAGES=("$FIXTURES/sample_page.png")
+          if [ "$PAGES" -gt 1 ]; then
+            python -m pip install pypdfium2 pillow
+            python - "$FIXTURES/sample_doc.pdf" "$RUNNER_TEMP" <<'PY'
+          import sys
+          from pathlib import Path
+
+          import pypdfium2
+
+          document = pypdfium2.PdfDocument(sys.argv[1])
+          for index, page in enumerate(document, 1):
+              page.render(scale=1.5).to_pil().save(Path(sys.argv[2]) / f"ocr-page-{index}.png")
+          PY
+            IMAGES=("$RUNNER_TEMP/ocr-page-1.png" "$RUNNER_TEMP/ocr-page-2.png")
+          fi
+          python -u backend/deploy_runpod.py --confirm --image "$IMAGE" \
+            --smoke-test "${IMAGES[@]}" \
             --smoke-test-pages "$PAGES" \
             ${IDLE:+--idle-timeout "$IDLE"}
 
@@ -152,9 +167,7 @@ jobs:
           RUNPOD_API_KEY: ${{ secrets.RUNPOD_API_KEY }}
         run: python backend/deploy_runpod.py --purge-queue "${{ inputs.endpoint_id }}"
 
-      # Repointing an endpoint at a new template leaves its running workers alone, so
-      # they keep serving the old image and a deploy can appear to succeed while
-      # changing nothing. This drains them; the endpoint's config is restored after.
+      # Manually substitute fresh workers if some are still on an old release.
       - name: Recycle workers
         if: inputs.action == 'recycle-workers'
         env:

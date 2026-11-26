@@ -71,6 +71,12 @@ before uninstalling: uninstalling removes the local scan history.
    connection and save. A successful connection test checks endpoint health, not
    OCR inference.
 
+For a rollout from GitHub Actions, set `RUNPOD_API_KEY` as a repository
+secret and run **Deploy RunPod endpoint** with the release's commit-specific
+`image_tag`. The workflow updates an existing endpoint in place. Use
+`deploy-and-smoke-test` with `smoke_test_pages=2` to OCR the two distinct
+pages of the test PDF on RunPod.
+
 To build an image yourself:
 
 ```bash
