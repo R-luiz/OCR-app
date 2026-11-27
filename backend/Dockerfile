@@ -1,3 +1,4 @@
+# syntax=docker/dockerfile:1
 # Baidu publishes a vLLM image with the Unlimited-OCR architecture already patched in,
 # so there is no reason to build vLLM from source here.
 #
@@ -29,6 +30,21 @@ ENV MODEL_NAME=/opt/models/unlimited-ocr \
     HF_HUB_OFFLINE=1 \
     TRANSFORMERS_OFFLINE=1
 
+# vLLM's tokenizer loader rereads this file without LLM's hf_overrides.
+# Use the native type so it selects the checkpoint's ByteLevel tokenizer
+# instead of the Llama tokenizer named in the upstream metadata.
+RUN python3 - <<'PY'
+import json
+import os
+from pathlib import Path
+
+path = Path(os.environ["MODEL_NAME"]) / "config.json"
+config = json.loads(path.read_text(encoding="utf-8"))
+if config["model_type"] == "unlimited_ocr":
+    config["model_type"] = "unlimited-ocr"
+    path.write_text(json.dumps(config, indent=2) + "\n", encoding="utf-8")
+PY
+
 COPY handler.py postprocess.py ocr_logits.py /app/
 
 # The base image's entrypoint starts vLLM's OpenAI server; RunPod needs our worker
@@ -43,13 +59,39 @@ COPY handler.py postprocess.py ocr_logits.py /app/
 # resolve. A regression now breaks the build instead of silently killing the endpoint.
 RUN ln -sf "$(command -v python3)" /usr/local/bin/ocr-worker-python \
  && /usr/local/bin/ocr-worker-python -c "import runpod, PIL.Image; print('interpreter + deps OK')" \
- && /usr/local/bin/ocr-worker-python -c "import handler; print('handler imports OK')" \
- && /usr/local/bin/ocr-worker-python -c "from handler import MODEL_NAME, VLLM_MODEL_TYPE; from vllm.transformers_utils.config import get_config; from vllm.transformers_utils.configs.unlimited_ocr import UnlimitedOCRConfig; config = get_config(MODEL_NAME, trust_remote_code=False, hf_overrides_kw={'model_type': VLLM_MODEL_TYPE}); assert isinstance(config, UnlimitedOCRConfig); print('native OCR model configuration OK')"
+ && /usr/local/bin/ocr-worker-python -c "import handler; print('handler imports OK')"
 
-RUN /usr/local/bin/ocr-worker-python -c "from multiprocessing.reduction import ForkingPickler; \
-    from ocr_logits import NoRepeatNGramAdapter; \
-    assert ForkingPickler.loads(ForkingPickler.dumps(NoRepeatNGramAdapter)) is NoRepeatNGramAdapter; \
-    print('OCR logits processor is spawn-serializable')"
+RUN /usr/local/bin/ocr-worker-python - <<'PY'
+from multiprocessing.reduction import ForkingPickler
+from pathlib import Path
+
+from tokenizers import Tokenizer
+from tokenizers.decoders import DecodeStream
+from vllm.tokenizers.registry import get_tokenizer
+from vllm.transformers_utils.config import get_config
+from vllm.transformers_utils.configs.unlimited_ocr import UnlimitedOCRConfig
+
+from handler import MODEL_NAME, build_multi_prompt
+from ocr_logits import NoRepeatNGramAdapter
+
+assert isinstance(get_config(MODEL_NAME, trust_remote_code=False), UnlimitedOCRConfig)
+print("native OCR model configuration OK")
+
+tokenizer = get_tokenizer(MODEL_NAME, trust_remote_code=False)
+reference = Tokenizer.from_file(str(Path(MODEL_NAME) / "tokenizer.json"))
+prompt = build_multi_prompt(2)
+assert tokenizer.encode(prompt, add_special_tokens=False) == reference.encode(
+    prompt, add_special_tokens=False
+).ids
+sample = "<PAGE><|ref|>title<|/ref|>Facture d’été\n128,40 € — 多页"
+ids = reference.encode(sample, add_special_tokens=False).ids
+stream = DecodeStream(ids=tokenizer.encode(prompt), skip_special_tokens=False)
+assert "".join(stream.step(tokenizer.backend_tokenizer, token) or "" for token in ids) == sample
+print("OCR tokenizer preserves prompt IDs, Unicode and layout markers")
+
+assert ForkingPickler.loads(ForkingPickler.dumps(NoRepeatNGramAdapter)) is NoRepeatNGramAdapter
+print("OCR logits processor is spawn-serializable")
+PY
 
 ENTRYPOINT []
 CMD ["/usr/local/bin/ocr-worker-python", "-u", "/app/handler.py"]

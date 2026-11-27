@@ -97,9 +97,10 @@ docker push <registry>/unlimited-ocr-worker:latest
 On Hopper GPUs, use
 `--build-arg BASE_IMAGE=vllm/vllm-openai:unlimited-ocr-cu129`.
 The worker uses vLLM's native Unlimited-OCR configuration rather than executing
-the checkpoint's Transformers modeling code. The image build checks that this
-configuration loads offline, before publishing the image. The worker also
-disables prefix and image-processor caching per the
+the checkpoint's Transformers modeling code. The image build normalizes the
+bundled checkpoint's model type so vLLM selects its ByteLevel tokenizer. It
+checks the configuration and a Unicode OCR sample offline before publishing.
+The worker also disables prefix and image-processor caching per the
 [vLLM serving recipe](https://recipes.vllm.ai/baidu/Unlimited-OCR.md): a page's
 image embeddings differ between single-page crop mode and multi-page mode.
 
