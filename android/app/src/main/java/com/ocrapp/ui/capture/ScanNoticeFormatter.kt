@@ -66,6 +66,7 @@ class ScanNoticeFormatter @Inject constructor(
 private val FallbackReason.messageRes: Int
     get() = when (this) {
         FallbackReason.NOT_CONFIGURED -> R.string.error_no_backend
+        FallbackReason.SESSION_EXPIRED -> R.string.error_session_expired
         FallbackReason.UNREACHABLE -> R.string.error_backend_unreachable
         FallbackReason.BACKEND_ERROR -> R.string.error_backend_failed
     }

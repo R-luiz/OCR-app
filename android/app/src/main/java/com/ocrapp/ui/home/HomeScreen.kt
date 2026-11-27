@@ -9,9 +9,11 @@ import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.consumeWindowInsets
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.imePadding
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
@@ -21,9 +23,6 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Add
 import androidx.compose.material.icons.filled.Close
-import androidx.compose.material.icons.filled.Description
-import androidx.compose.material.icons.filled.QrCode
-import androidx.compose.material.icons.filled.QrCodeScanner
 import androidx.compose.material.icons.filled.Search
 import androidx.compose.material.icons.filled.Settings
 import androidx.compose.material3.ExperimentalMaterial3Api
@@ -39,6 +38,7 @@ import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -56,6 +56,9 @@ import com.ocrapp.R
 import com.ocrapp.data.ScanSummary
 import com.ocrapp.ocr.EngineType
 import com.ocrapp.ui.components.DeleteScanDialog
+import com.ocrapp.ui.icons.Description
+import com.ocrapp.ui.icons.QrCode
+import com.ocrapp.ui.icons.QrCodeScanner
 import java.text.DateFormat
 import java.util.Date
 
@@ -71,7 +74,8 @@ fun HomeScreen(
 ) {
     val scans by viewModel.scans.collectAsStateWithLifecycle()
     val query by viewModel.query.collectAsStateWithLifecycle()
-    var scanToDelete by remember { mutableStateOf<Long?>(null) }
+    // Saveable: a rotation must not dismiss the delete confirmation under the user's finger.
+    var scanToDelete by rememberSaveable { mutableStateOf<Long?>(null) }
 
     Scaffold(
         topBar = {
@@ -98,7 +102,16 @@ fun HomeScreen(
             )
         },
     ) { padding ->
-        Column(modifier = Modifier.fillMaxSize().padding(padding)) {
+        // imePadding keeps the last search results above the keyboard instead of under
+        // it; consumeWindowInsets tells it the Scaffold padding already covers the
+        // navigation bar, so that height is not added twice.
+        Column(
+            modifier = Modifier
+                .fillMaxSize()
+                .padding(padding)
+                .consumeWindowInsets(padding)
+                .imePadding(),
+        ) {
             OutlinedTextField(
                 value = query,
                 onValueChange = viewModel::onQueryChange,
@@ -260,7 +273,8 @@ private fun ScanRow(
                     remember(scan.createdAt) { dateFormat.format(Date(scan.createdAt)) },
                     pluralStringResource(R.plurals.page_count, scan.pageCount, scan.pageCount)
                         .takeIf { scan.pageCount > 1 },
-                    stringResource(R.string.home_engine_document)
+                    // The engine's user-facing name, as Capture offers it.
+                    stringResource(R.string.mode_document)
                         .takeIf { scan.engineType == EngineType.DOCUMENT },
                 ).joinToString(" · "),
                 style = MaterialTheme.typography.labelSmall,

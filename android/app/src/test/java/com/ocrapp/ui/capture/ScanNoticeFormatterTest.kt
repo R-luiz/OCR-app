@@ -1,6 +1,8 @@
 package com.ocrapp.ui.capture
 
+import android.content.Context
 import androidx.test.core.app.ApplicationProvider
+import com.ocrapp.R
 import com.ocrapp.ocr.EngineType
 import com.ocrapp.ocr.FallbackReason
 import com.ocrapp.ocr.OcrOutput
@@ -41,6 +43,22 @@ class ScanNoticeFormatterTest {
         assertEquals(2, fallback.lines().size)
         assertTrue(emptyPages, "2, 5" in emptyPages)
         assertTrue(leftOut, "64" in leftOut && "3" in leftOut)
+    }
+
+    // An expired sign-in asks for a new one, not for a backend to be configured.
+    @Test
+    fun `an expired sign-in tells the user to sign in again`() {
+        val context = ApplicationProvider.getApplicationContext<Context>()
+        val result = RecognitionResult(
+            output = output(),
+            fallbackReason = FallbackReason.SESSION_EXPIRED,
+            fallbackDetail = "The sign-in was rejected (HTTP 401)",
+        )
+
+        val notice = formatter.format(result, droppedPages = 0)!!.lines()
+
+        assertEquals(context.getString(R.string.error_session_expired), notice.first())
+        assertEquals("The sign-in was rejected (HTTP 401)", notice.last())
     }
 
     @Test

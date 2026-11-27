@@ -1,0 +1,43 @@
+// OCR gateway: GitHub sign-in for the owner (authorization code with PKCE, back to the
+// app through a verified Android App Link), and a relay of the app's four RunPod calls
+// to one fixed endpoint, so the app never holds a RunPod key.
+//
+// The account is named at deploy time, not here (Wrangler 4.36 or later, for "ratelimits"):
+//   CLOUDFLARE_ACCOUNT_ID=<account id> npx wrangler@4 deploy
+//
+// Secrets, set once with `npx wrangler@4 secret put <NAME>` from this directory:
+//   OCR_SESSION_KEY       base64url of 32 random bytes; signs sessions. Rotating it signs
+//                         every device out.
+//                         node -e "process.stdout.write(require('node:crypto').randomBytes(32).toString('base64url'))" | npx wrangler@4 secret put OCR_SESSION_KEY
+//   RUNPOD_API_KEY        the RunPod API key, exactly as RunPod shows it.
+//   GITHUB_CLIENT_SECRET  a client secret of the GitHub App below: GitHub's code exchange
+//                         requires one, PKCE or not.
+{
+  "name": "ocr-app-gateway",
+  "main": "src/index.js",
+  "compatibility_date": "2026-11-01",
+  "workers_dev": false,
+  "preview_urls": false,
+  "routes": [{ "pattern": "ocr.robinluiz.fr", "custom_domain": true }],
+  "observability": { "enabled": false },
+  "logpush": false,
+  "kv_namespaces": [
+    // One key, `not_before`: sessions issued before it are refused. Every sign-in and
+    // every sign-out moves it forward. Without this binding the gateway answers 503.
+    { "binding": "SESSION_STATE", "id": "309a48eac80a4e1ca50c08b3a89026ab" }
+  ],
+  "ratelimits": [
+    // /auth/token and /auth/signout, counted per route and client address ("period" is 10
+    // or 60 seconds). Without this binding the gateway skips the limit.
+    { "name": "AUTH_LIMITER", "namespace_id": "1001", "simple": { "limit": 30, "period": 60 } }
+  ],
+  "vars": {
+    // Client ID of the private GitHub App "OCR-app sign-in (R-luiz)" (public; callback URL
+    // https://ocr.robinluiz.fr/auth/callback, device flow off, no permissions, webhook off).
+    // While it is empty the gateway answers 503.
+    "GITHUB_CLIENT_ID": "Iv23liB9UIaDsQMJrCwq",
+    // The one GitHub account admitted, by numeric user id.
+    "GITHUB_OWNER_ID": "84543755",
+    "RUNPOD_ENDPOINT_ID": "2k90gse2jm67e1"
+  }
+}

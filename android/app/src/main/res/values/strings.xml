@@ -17,7 +17,6 @@
     <string name="home_empty_body">Capture a page or import a PDF to get started.</string>
     <string name="home_empty_search">No scan matches your search</string>
     <string name="home_new_scan">New scan</string>
-    <string name="home_engine_document" translatable="false">Unlimited-OCR</string>
     <plurals name="page_count">
         <item quantity="one">%1$d page</item>
         <item quantity="other">%1$d pages</item>
@@ -37,11 +36,29 @@
     <string name="capture_scan_pending">Scan (%1$d)</string>
     <string name="capture_discard_pending">Discard the captured pages</string>
     <string name="capture_discard_pending_body">Photos in this batch have not been scanned or saved.</string>
+    <string name="capture_stop_title">Stop this scan?</string>
+    <string name="capture_stop_body">The server stops working on these pages. Starting again means waiting for the server again.</string>
+    <string name="capture_stop_confirm">Stop scan</string>
+    <string name="capture_error_dismiss">Dismiss</string>
+    <plurals name="capture_batch_pages">
+        <item quantity="one">%1$d page in this batch</item>
+        <item quantity="other">%1$d pages in this batch</item>
+    </plurals>
+    <string name="capture_page_number">Page %1$d</string>
+    <string name="capture_page_review">Review or delete</string>
+    <string name="capture_page_keep">Keep</string>
+    <string name="capture_import_blocked">To import images or a PDF, scan or discard these photos first.</string>
+    <string name="capture_batch_full">One scan takes at most %1$d pages. Scan these, then start a new batch.</string>
+    <string name="camera_permission_blocked">In the settings that open, allow Camera under Permissions.</string>
+    <string name="camera_open_settings">Open settings</string>
 
     <string name="mode_quick">Quick scan</string>
     <string name="mode_document">Document parsing</string>
-    <string name="mode_quick_hint">On-device, works offline</string>
-    <string name="mode_document_hint">Pages are sent to your RunPod endpoint for layout-aware Markdown.</string>
+    <string name="mode_quick_hint">On-device, works offline · Latin alphabet only</string>
+    <string name="mode_document_hint">Layout-aware Markdown (headings, tables) from the document-parsing server. The first scan after a pause can take up to 10 minutes.</string>
+    <string name="mode_document_setup_hint">Not set up: scans will use on-device Quick scan instead.</string>
+    <string name="mode_document_expired_hint">Sign-in expired: scans will use on-device Quick scan until you sign in again.</string>
+    <string name="mode_document_open_settings">Open Settings</string>
 
     <string name="result_title">Result</string>
     <string name="result_engine_quick">Quick scan · on-device</string>
@@ -55,6 +72,10 @@
     <string name="result_discard_title">Discard your changes?</string>
     <string name="result_discard_body">The edits you made to this scan have not been saved.</string>
     <string name="result_discard_confirm">Discard</string>
+    <string name="result_retry_document">Retry with Document parsing</string>
+    <string name="result_retry_document_title">Retry with Document parsing?</string>
+    <string name="result_retry_document_body">Document parsing runs again on this scan\'s pages, which can take several minutes. If it succeeds, its result replaces this text, along with any corrections you made.</string>
+    <string name="result_retry_document_confirm">Retry</string>
 
     <string name="settings_title">Settings</string>
     <string name="settings_runpod_header">Unlimited-OCR backend</string>
@@ -65,7 +86,7 @@
     <string name="settings_read_failed">Could not read the stored settings.</string>
     <string name="settings_save_failed">Could not save the settings.</string>
     <string name="settings_version">App version %1$s</string>
-    <string name="settings_hint">Document parsing sends pages to your own RunPod Serverless endpoint. Leave blank to use on-device Quick scan only.</string>
+    <string name="settings_hint">Document parsing sends pages to the Unlimited-OCR backend: sign in with GitHub below, or use your own RunPod endpoint under Advanced. Quick scan works on-device without either.</string>
     <string name="settings_reachable">Endpoint reachable</string>
     <string name="settings_reachable_workers">Endpoint reachable — %1$d ready, %2$d idle, %3$d running</string>
     <string name="settings_unreachable">Could not reach the endpoint: %1$s</string>
@@ -73,15 +94,42 @@
     <string name="settings_error_not_found">RunPod has no endpoint with this ID</string>
     <string name="settings_error_network">no network connection to RunPod</string>
 
+    <string name="settings_managed_title">Managed service</string>
+    <string name="settings_managed_signed_out">Sign in with your GitHub account to use the hosted Unlimited-OCR service. There is no endpoint ID or API key to enter, and your GitHub password is never typed into this app.</string>
+    <string name="settings_managed_sign_in">Sign in with GitHub</string>
+    <string name="settings_managed_sign_in_again">Sign in again</string>
+    <string name="settings_managed_try_again">Try again</string>
+    <string name="settings_managed_in_browser">Waiting for you to approve the sign-in on GitHub, in your browser…</string>
+    <string name="settings_managed_finishing">Finishing the sign-in…</string>
+    <string name="settings_managed_connected">Signed in · valid until %1$s</string>
+    <string name="settings_managed_disconnect">Disconnect</string>
+    <string name="settings_managed_expired">Your sign-in has expired. Document parsing falls back to on-device Quick scan until you sign in again.</string>
+    <string name="settings_managed_error_network">no network connection to the service</string>
+    <string name="settings_open_failed">No app can open this link</string>
+    <string name="settings_signin_error_expired">The sign-in took too long, or its link was already used. Try again.</string>
+    <string name="settings_signin_error_denied">The sign-in was refused on GitHub.</string>
+    <string name="settings_signin_error_forbidden">This GitHub account is not allowed to use the service.</string>
+    <string name="settings_signin_error_mismatch">This sign-in could not be verified. Start it again from this app.</string>
+    <string name="settings_signin_error_network">Could not reach the service. Check your connection and try again.</string>
+    <string name="settings_signin_error_not_started">The sign-in could not be started on this device.</string>
+    <string name="settings_signin_error_service">The service gave an answer the app could not use. Try again later.</string>
+    <string name="settings_signin_error_storage">Signed in, but the sign-in could not be saved on this device.</string>
+    <string name="settings_advanced_title">Advanced: your own RunPod endpoint</string>
+    <string name="settings_advanced_expand">Show</string>
+    <string name="settings_advanced_collapse">Hide</string>
+    <string name="settings_advanced_hint">Instead of the managed service, pages can go straight to a RunPod Serverless endpoint you own. The endpoint ID and API key stay encrypted on this device and only ever go to RunPod.</string>
+    <string name="settings_use_own_endpoint">Use my own RunPod endpoint</string>
+    <string name="settings_direct_incomplete">Enter the endpoint ID and the API key to use your own endpoint.</string>
+
     <string name="progress_preparing">Preparing pages…</string>
     <string name="progress_preparing_page">Preparing page %1$d of %2$d…</string>
     <string name="progress_recognizing">Recognizing text…</string>
     <string name="progress_recognizing_page">Recognizing page %1$d of %2$d…</string>
     <string name="progress_uploading">Uploading…</string>
-    <string name="progress_queued">Waiting for a GPU worker…</string>
+    <string name="progress_queued">Waiting for the document-parsing server…</string>
     <string name="progress_running">Parsing document…</string>
     <string name="progress_saving">Saving scan…</string>
-    <string name="progress_cold_start">Your GPU endpoint is starting up. The first scan after a pause takes a few minutes; later ones are quick.</string>
+    <string name="progress_cold_start">An idle server can take up to 10 minutes to start; scans right after are quick. You can use other apps meanwhile.</string>
 
     <plurals name="pages_empty">
         <item quantity="one">No text was recognized on page %2$s — that page is missing from the result.</item>
@@ -92,16 +140,34 @@
         <item quantity="other">Only the first %2$d pages were scanned — %1$d more were left out.</item>
     </plurals>
 
-    <string name="error_no_backend">No backend configured — used on-device Quick scan instead.</string>
-    <string name="error_backend_unreachable">Backend unreachable — used on-device Quick scan instead.</string>
-    <string name="error_backend_failed">Backend returned an error — used on-device Quick scan instead.</string>
-    <string name="error_no_text">No text found.</string>
-    <string name="error_load_failed">Could not read that file.</string>
-    <string name="error_recognition_failed">Recognition failed.</string>
-    <string name="error_capture_failed">Could not take the photo.</string>
+    <string name="error_no_backend">Document parsing is not set up — used on-device Quick scan instead. Sign in under Settings.</string>
+    <string name="error_session_expired">Sign-in expired or refused — used on-device Quick scan instead. Sign in again under Settings.</string>
+    <string name="error_backend_unreachable">Document parsing unavailable — used on-device Quick scan instead.</string>
+    <string name="error_backend_failed">Document parsing failed — used on-device Quick scan instead.</string>
+    <string name="error_no_text">No text found. Check that the page is sharp, well lit and fills the frame, then try again.</string>
+    <string name="error_load_failed">Could not read that file. Try another image or PDF.</string>
+    <string name="error_recognition_failed">Recognition failed. Try again, or switch scan mode.</string>
+    <string name="error_capture_failed">Could not take the photo. Try again, or import an image instead.</string>
     <string name="error_scan_missing">This scan no longer exists.</string>
-    <string name="error_scan_save_failed">Could not save this scan.</string>
+    <string name="error_scan_save_failed">Could not save this scan. Check that the device has free storage, then try again.</string>
     <string name="error_scan_update_failed">Could not update this scan.</string>
+
+    <string name="retry_title">Retry Document parsing</string>
+    <string name="retry_body">Document parsing runs again on the pages kept from this scan. If it fails, your earlier result is kept.</string>
+    <string name="retry_try_again">Try again</string>
+    <string name="retry_result_kept">Your earlier result is kept.</string>
+    <string name="retry_error_pages_gone">The pages of this scan are no longer kept. Take or import them again to use Document parsing.</string>
+    <string name="retry_error_not_set_up">Document parsing is not set up. Sign in under Settings, then try again.</string>
+    <string name="retry_error_session_expired">Your sign-in has expired. Sign in again under Settings, then try again.</string>
+    <string name="retry_error_unreachable">The document-parsing server could not be reached or did not answer in time. Check your connection, then try again.</string>
+    <string name="retry_error_failed">The document-parsing server returned an error. Try again in a few minutes.</string>
+    <string name="retry_error_no_text">Document parsing found no text on these pages.</string>
+
+    <string name="scan_channel_progress">Scans in progress</string>
+    <string name="scan_channel_outcome">Finished scans</string>
+    <string name="scan_ready_title">Scan ready</string>
+    <string name="scan_ready_body">Tap to open its text.</string>
+    <string name="scan_failed_title">Scan did not finish</string>
 
     <string name="qr_scan_title">Scan QR code</string>
     <string name="qr_scan_hint">Point the camera at a QR code</string>
@@ -118,4 +184,8 @@
     <string name="qr_generate_share_chooser">Share QR code image</string>
     <string name="qr_generate_saved">Saved to Pictures</string>
     <string name="qr_generate_save_failed">Couldn\'t save the image</string>
+    <string name="qr_generate_share_failed">Couldn\'t prepare the image for sharing</string>
+    <string name="qr_generate_image_description">QR code for the text below</string>
+    <string name="qr_generate_permission_needed">Storage permission is needed to save to the gallery</string>
+    <string name="qr_generate_open_settings">Open settings</string>
 </resources>

@@ -71,11 +71,14 @@ class MlKitOcrEngine @Inject constructor() : OcrEngine {
                 }
         }
 
-    private companion object {
+    companion object {
         /**
          * ML Kit wants characters around 16-24 px tall. At this edge an A4 page comes
          * out near 175 dpi, which puts ordinary 10 pt body text inside that range.
+         *
+         * The camera captures pages at this size too, so a photo carries no pixels that
+         * every consumer would only throw away.
          */
-        const val PAGE_EDGE_PX = 2048
+        internal const val PAGE_EDGE_PX = 2048
     }
 }

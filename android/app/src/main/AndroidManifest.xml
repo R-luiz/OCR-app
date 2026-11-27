@@ -10,6 +10,11 @@
     <uses-permission
         android:name="android.permission.WRITE_EXTERNAL_STORAGE"
         android:maxSdkVersion="28" />
+    <!-- A Document-parsing scan can wait minutes for the server; a foreground service
+         keeps the process alive meanwhile, and its notification shows the wait. -->
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_DATA_SYNC" />
+    <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
 
     <uses-feature
         android:name="android.hardware.camera.any"
@@ -38,6 +43,25 @@
             </intent-filter>
         </activity>
 
+        <!-- GitHub's sign-in redirect, verified against the domain's assetlinks.json. It shows
+             nothing, finishes at once, and stays out of recents and out of the app's task. -->
+        <activity
+            android:name=".auth.AuthCallbackActivity"
+            android:excludeFromRecents="true"
+            android:exported="true"
+            android:noHistory="true"
+            android:taskAffinity=""
+            android:theme="@android:style/Theme.Translucent.NoTitleBar">
+            <intent-filter android:autoVerify="true">
+                <action android:name="android.intent.action.VIEW" />
+                <category android:name="android.intent.category.DEFAULT" />
+                <category android:name="android.intent.category.BROWSABLE" />
+                <data android:scheme="https" />
+                <data android:host="ocr.robinluiz.fr" />
+                <data android:path="/auth/callback" />
+            </intent-filter>
+        </activity>
+
         <!--
           The com.google.mlkit:text-recognition artifact bundles the Latin model into
           the APK (~4 MB), so Quick scan works on first launch with no network and no
@@ -56,6 +80,11 @@
                 android:name="android.support.FILE_PROVIDER_PATHS"
                 android:resource="@xml/file_paths" />
         </provider>
+
+        <service
+            android:name=".scan.ScanForegroundService"
+            android:exported="false"
+            android:foregroundServiceType="dataSync" />
     </application>
 
 </manifest>

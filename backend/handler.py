@@ -14,7 +14,11 @@ working.
 and returns::
 
     {"markdown": "...", "pages": [{"index": 0, "markdown": "..."}], "empty_pages": [],
-     "page_mode": "per_page", "model": "...", "elapsed_ms": 1234, "warnings": ["..."]}
+     "page_mode": "per_page", "long_context": {"windows": 1, "parsed": 1},
+     "model": "...", "elapsed_ms": 1234,
+     "stats": [{"kind": "window", "prompts": 1, "prompt_tokens": 870,
+                "output_tokens": 412, "ms": 5120}],
+     "warnings": ["..."]}
 
 (``warnings`` is left out when there are none) or ``{"error": "..."}``, which RunPod
 turns into a FAILED job.
@@ -24,10 +28,18 @@ The model emits a layout stream, not Markdown; :mod:`postprocess` converts it.
 ``pages`` contains one entry per input image, in order. ``empty_pages`` lists the
 zero-based indexes with no text; ``markdown`` joins only the recognized content.
 
+Only JPEG, PNG and WebP pages are decoded, and the size of every page of a job is
+checked from the image headers before any of them is decoded.
+
 Multi-page requests go to the model's long-context path in windows of at most
-``LONG_CONTEXT_WINDOW_PAGES`` pages. If a window raises, is cut off, or returns the
-wrong number of page markers, it is parsed page by page instead and reported in
-``warnings`` so callers can distinguish the result from an uninterrupted pass.
+``LONG_CONTEXT_WINDOW_PAGES`` pages, all submitted in one generate() call. A window
+that is cut off or returns the wrong number of page markers, and every window when
+that call raises, is parsed page by page instead (one batch for the whole job) and
+reported in ``warnings`` so callers can distinguish the result from an uninterrupted
+pass. ``long_context`` counts the windows sent to that path and those it parsed.
+
+``stats`` has one entry per generate() call: its kind ("window", "pages" or "retry"),
+prompts, prompt and output tokens, and wall time.
 
 vLLM is imported lazily so this module can be imported (and its pure helpers tested)
 on a machine with no GPU.
@@ -38,12 +50,14 @@ from __future__ import annotations
 import base64
 import binascii
 import io
+import math
 import os
 import time
-from dataclasses import dataclass
+from collections.abc import Sequence
+from dataclasses import dataclass, field
 from typing import Any
 
-from PIL import Image
+from PIL import Image, PngImagePlugin
 
 import postprocess
 
@@ -54,15 +68,34 @@ MAX_MODEL_LEN = int(os.environ.get("MAX_MODEL_LEN", "32768"))
 GPU_MEMORY_UTILIZATION = float(os.environ.get("GPU_MEMORY_UTILIZATION", "0.85"))
 MAX_PAGES = int(os.environ.get("MAX_PAGES", "64"))
 
-# Bounds on a single page, applied before any large allocation. The app sends
-# 1024px JPEGs a few hundred KB in size, so these are generous for legitimate
-# traffic while refusing decompression bombs.
+# Bounds on the pages of a job, checked from the image headers before anything is
+# decoded. The app sends JPEGs a few hundred KB in size, at most 1920 px on the long
+# edge for one page and 1024 px for several (RemoteOcrEngine.kt), so its largest job,
+# 64 pages, holds 67 MP.
 MAX_IMAGE_BYTES = int(os.environ.get("MAX_IMAGE_BYTES", str(25 * 1024 * 1024)))
-MAX_IMAGE_PIXELS = int(os.environ.get("MAX_IMAGE_PIXELS", str(80_000_000)))
+# One page: a 12 MP phone photo (4000 x 3000) fits, and so does MODEL_PAGE_PIXELS.
+MAX_IMAGE_PIXELS = int(os.environ.get("MAX_IMAGE_PIXELS", str(16_000_000)))
+# All the pages of a job: 64 pages of 2048 x 2048, about 0.8 GB once decoded to RGB.
+# The per-page bound alone let 64 crafted pages of under 13 KB each decode to 14 GB.
+MAX_TOTAL_PIXELS = int(os.environ.get("MAX_TOTAL_PIXELS", str(64 * 2048 * 2048)))
+
+# The most the model reads from one page. vLLM's Unlimited-OCR processor resizes a
+# single page to a grid of at most 32 tiles of 640 x 640 (plus a 1024 px overview), and
+# each page of a multi-page prompt to 640 x 640. A decoded page above this size is
+# shrunk to it, which keeps the grid the processor picks: that grid depends on the
+# aspect ratio, and on the area only below this size.
+MODEL_PAGE_PIXELS = 32 * 640 * 640
+
+# The app sends JPEG and the deploy smoke test PNG; WebP is the other format phones and
+# browsers produce. Every other Pillow decoder stays out of reach of a job payload.
+IMAGE_FORMATS = ("JPEG", "PNG", "WEBP")
 
 # Pillow's own guard, as a second line of defence for any path that reaches
-# decoding without going through decode_image().
+# decoding without going through open_image().
 Image.MAX_IMAGE_PIXELS = MAX_IMAGE_PIXELS
+# Pillow reads PNG text metadata independently of the pixel budget. OCR has no use
+# for large text chunks; bound their cumulative decoded size per page as well.
+PngImagePlugin.MAX_TEXT_MEMORY = 1024 * 1024
 
 IMAGE_TOKEN = "<image>"
 PROMPT_SINGLE = f"{IMAGE_TOKEN}document parsing."
@@ -107,6 +140,12 @@ NGRAM_WINDOW_MULTI = 1024
 # bounding the worst case at three passes over a single page.
 EMPTY_PAGE_RETRIES = 2
 
+# Output cap of a single-page prompt. The n-gram filter only catches a loop whose period
+# fits its window (NGRAM_WINDOW_SINGLE - NGRAM_SIZE + 1 = 94 tokens); a page caught in
+# a longer loop, such as a repeated table row, would otherwise decode until the 32K
+# context is full. Long-context windows keep no cap: their pages share the context.
+PAGE_MAX_TOKENS = int(os.environ.get("PAGE_MAX_TOKENS", "8192"))
+
 
 class InvalidInput(ValueError):
     """Raised for a malformed job payload; surfaced to the client as an error."""
@@ -120,13 +159,29 @@ class OcrRequest:
     long_context: bool = False
 
 
+@dataclass
+class JobReport:
+    """What a job reports besides its pages."""
+
+    warnings: list[str] = field(default_factory=list)
+    # Long-context windows submitted, and those that came back with one section per page.
+    windows: int = 0
+    parsed: int = 0
+    # One entry per generate() call; see _generate.
+    stats: list[dict[str, Any]] = field(default_factory=list)
+
+
 # --------------------------------------------------------------------------------------
 # Pure helpers (no GPU, no vLLM) — these are what tests exercise.
 # --------------------------------------------------------------------------------------
 
 
-def decode_image(encoded: str) -> Image.Image:
-    """Decodes a bare base64 string or a ``data:`` URL into an RGB image."""
+def open_image(encoded: str) -> Image.Image:
+    """Reads the header of a page given as bare base64 or a ``data:`` URL.
+
+    Nothing is decoded yet: the pixels are left to :func:`load_image`, so the size of
+    every page of a job can be checked before any of them takes memory.
+    """
     if not isinstance(encoded, str) or not encoded.strip():
         raise InvalidInput("images entries must be non-empty strings")
 
@@ -147,7 +202,7 @@ def decode_image(encoded: str) -> Image.Image:
         )
 
     try:
-        image = Image.open(io.BytesIO(raw))
+        image = Image.open(io.BytesIO(raw), formats=IMAGE_FORMATS)
     except Exception as exc:  # Pillow raises a wide variety here.
         raise InvalidInput(f"could not decode image bytes: {exc}") from exc
 
@@ -159,6 +214,23 @@ def decode_image(encoded: str) -> Image.Image:
         raise InvalidInput(
             f"image is {width}x{height} ({width * height} pixels), limit is {MAX_IMAGE_PIXELS}"
         )
+    return image
+
+
+def load_image(image: Image.Image) -> Image.Image:
+    """Decodes a page from :func:`open_image` into RGB of at most MODEL_PAGE_PIXELS.
+
+    ``image`` is closed once converted, so its pixels are freed even while the caller
+    still holds a reference to it.
+    """
+    width, height = image.size
+    target = None
+    if width * height > MODEL_PAGE_PIXELS:
+        scale = math.sqrt(MODEL_PAGE_PIXELS / (width * height))
+        target = (max(1, int(width * scale)), max(1, int(height * scale)))
+        # JPEG only: decode at 1/2, 1/4 or 1/8 scale where that stays at or above the
+        # target, so the full-size bitmap is never allocated. A no-op for other formats.
+        image.draft("RGB", target)
 
     try:
         image.load()
@@ -166,7 +238,16 @@ def decode_image(encoded: str) -> Image.Image:
         raise InvalidInput(f"could not read image data: {exc}") from exc
 
     # The model expects 3-channel input; incoming PNGs may carry alpha or be grayscale.
-    return image.convert("RGB")
+    rgb = image.convert("RGB")
+    image.close()
+    if target:
+        rgb.thumbnail(target)
+    return rgb
+
+
+def decode_image(encoded: str) -> Image.Image:
+    """Decodes a bare base64 string or a ``data:`` URL into an RGB image."""
+    return load_image(open_image(encoded))
 
 
 def parse_request(job_input: Any) -> OcrRequest:
@@ -180,7 +261,16 @@ def parse_request(job_input: Any) -> OcrRequest:
     if len(images) > MAX_PAGES:
         raise InvalidInput(f"input.images holds {len(images)} pages, limit is {MAX_PAGES}")
 
-    decoded = [decode_image(entry) for entry in images]
+    # Every header is read before any page is decoded, so the size of the whole job is
+    # checked while it is still only bytes.
+    opened = [open_image(entry) for entry in images]
+    total = sum(image.width * image.height for image in opened)
+    if total > MAX_TOTAL_PIXELS:
+        raise InvalidInput(
+            f"input.images hold {total} pixels in all, limit is {MAX_TOTAL_PIXELS}"
+        )
+
+    decoded = [load_image(image) for image in opened]
     long_context = len(decoded) > 1 and bool(
         job_input.get("long_context", LONG_CONTEXT_DEFAULT)
     )
@@ -283,6 +373,7 @@ def get_engine():
     """Builds the vLLM engine once per worker process and keeps it warm."""
     global _engine
     if _engine is None:
+        started = time.monotonic()
         from vllm import LLM
         from ocr_logits import NoRepeatNGramAdapter
 
@@ -301,19 +392,23 @@ def get_engine():
             limit_mm_per_prompt={"image": MAX_PAGES},
             logits_processors=[NoRepeatNGramAdapter],
         )
+        print(
+            f"[unlimited-ocr] engine ready in {time.monotonic() - started:.1f}s",
+            flush=True,
+        )
     return _engine
 
 
-def _sampling_params(ngram_window: int):
+def _sampling_params(ngram_window: int, max_tokens: int | None):
     from vllm import SamplingParams
 
     return SamplingParams(
         temperature=0.0,
-        # None means "generate until EOS or the context is full". An explicit cap of
-        # MAX_MODEL_LEN here would be rejected outright: current vLLM refuses any
-        # request whose prompt tokens + max_tokens exceed max_model_len rather than
-        # clamping, and a multimodal prompt always occupies tokens.
-        max_tokens=None,
+        # None means "generate until EOS or the context is full", which long-context
+        # windows need. A cap of MAX_MODEL_LEN would be rejected outright: current vLLM
+        # refuses any request whose prompt tokens + max_tokens exceed max_model_len
+        # rather than clamping, and a multimodal prompt always occupies tokens.
+        max_tokens=max_tokens,
         skip_special_tokens=False,
         extra_args={EXTRA_ARG_NGRAM_WINDOW: ngram_window},
     )
@@ -322,13 +417,26 @@ def _sampling_params(ngram_window: int):
 @dataclass
 class Completion:
     text: str
-    # finish_reason == "length": generation stopped at the context limit, so the text
-    # ends mid-document.
+    # finish_reason == "length": generation stopped at max_tokens or the context limit,
+    # so the text ends mid-document.
     truncated: bool
 
 
-def _generate(prompts: list[dict[str, Any]], ngram_window: int) -> list[Completion]:
-    outputs = get_engine().generate(prompts, _sampling_params(ngram_window))
+def _generate(
+    prompts: list[dict[str, Any]],
+    ngram_window: int,
+    kind: str,
+    report: JobReport,
+    max_tokens: int | None = None,
+) -> list[Completion]:
+    """Runs one generate() call and records its size and duration in ``report.stats``.
+
+    ``kind`` names the pass: "window" (long-context windows), "pages" (single-page
+    prompts) or "retry" (a blank page run again on its own).
+    """
+    started = time.monotonic()
+    outputs = get_engine().generate(prompts, _sampling_params(ngram_window, max_tokens))
+    elapsed_ms = int((time.monotonic() - started) * 1000)
 
     # generate() returns one output per prompt, in the order submitted. Assert that
     # rather than assume it: a mismatch would silently drop or duplicate a page, and
@@ -336,6 +444,13 @@ def _generate(prompts: list[dict[str, Any]], ngram_window: int) -> list[Completi
     if len(outputs) != len(prompts):
         raise RuntimeError(f"expected {len(prompts)} completions, got {len(outputs)}")
 
+    report.stats.append({
+        "kind": kind,
+        "prompts": len(prompts),
+        "prompt_tokens": sum(len(output.prompt_token_ids or ()) for output in outputs),
+        "output_tokens": sum(len(output.outputs[0].token_ids or ()) for output in outputs),
+        "ms": elapsed_ms,
+    })
     return [
         Completion(
             text=output.outputs[0].text,
@@ -357,9 +472,10 @@ def _convert(raw: str) -> str:
 
 
 def run_per_page(
-    images: list[Image.Image], first_page: int, warnings: list[str]
+    images: list[Image.Image], pages: Sequence[int], report: JobReport
 ) -> list[str]:
-    """Runs one prompt per page and returns their markdown, in page order.
+    """Runs one prompt for each of ``pages`` (indexes into ``images``) and returns their
+    markdown, in that order.
 
     Every page goes through the single-image path, which is the configuration that
     actually works for independent pages (several images against one prompt is the
@@ -367,18 +483,17 @@ def run_per_page(
     of the cross-page context that path carries.
 
     The pages are submitted as one batch, so vLLM schedules them together on the
-    already-loaded model rather than paying a cold start each. ``first_page`` is the
-    zero-based number of ``images[0]`` in the whole request, for messages.
+    already-loaded model rather than paying a cold start each.
     """
     prompts = [
-        {"prompt": PROMPT_SINGLE, "multi_modal_data": {"image": [image]}}
-        for image in images
+        {"prompt": PROMPT_SINGLE, "multi_modal_data": {"image": [images[page]]}}
+        for page in pages
     ]
-    completions = _generate(prompts, NGRAM_WINDOW_SINGLE)
+    completions = _generate(prompts, NGRAM_WINDOW_SINGLE, "pages", report, PAGE_MAX_TOKENS)
 
     markdowns = []
-    for index, (prompt, completion) in enumerate(zip(prompts, completions)):
-        number = first_page + index + 1
+    for page, prompt, completion in zip(pages, prompts, completions):
+        number = page + 1
         markdown = _convert(completion.text)
 
         # A batched run can return an empty completion for a page that parses perfectly
@@ -395,19 +510,23 @@ def run_per_page(
                 f"retrying it alone ({attempts}/{EMPTY_PAGE_RETRIES})",
                 flush=True,
             )
-            completion = _generate([prompt], NGRAM_WINDOW_SINGLE)[0]
+            completion = _generate(
+                [prompt], NGRAM_WINDOW_SINGLE, "retry", report, PAGE_MAX_TOKENS
+            )[0]
             markdown = _convert(completion.text)
 
         if completion.truncated:
-            warnings.append(f"page {number}: output was cut off at the context limit")
+            report.warnings.append(
+                f"page {number}: output reached the per-page output limit and was cut off"
+            )
         markdowns.append(markdown)
     return markdowns
 
 
-def run_long_context_window(
-    images: list[Image.Image], first_page: int, warnings: list[str]
-) -> list[str] | None:
-    """Parses several pages in one generate() call.
+def run_long_context_windows(
+    images: list[Image.Image], windows: list[range], report: JobReport
+) -> list[list[str] | None]:
+    """Parses each window of several pages with one prompt, all in one generate() call.
 
     This is the path Unlimited-OCR is built around: the R-SWA decoder keeps the KV
     cache flat across pages, so one 32K-context pass can carry structure over a page
@@ -419,76 +538,92 @@ def run_long_context_window(
     processing cache to stay consistent with that. Both sides derive the crop flag
     from the image count, so they agree.
 
-    The model marks each page with ``<PAGE>``. If the boundaries are not exact or
-    the completion was cut off, return None so the caller re-parses the window.
-    Returning a possibly incomplete document would hide the missing pages.
+    The windows are independent (context does not carry from one to the next), so they
+    go in one call: vLLM decodes them side by side instead of one after another.
+
+    The model marks each page with ``<PAGE>``. A window whose boundaries are not exact,
+    or whose completion was cut off, comes back as None so the caller re-parses its
+    pages. Returning a possibly incomplete document would hide the missing pages.
     """
-    last_page = first_page + len(images)
-    completion = _generate(
-        [{
-            "prompt": build_multi_prompt(len(images)),
-            "multi_modal_data": {"image": list(images)},
-        }],
-        NGRAM_WINDOW_MULTI,
-    )[0]
+    prompts = [
+        {
+            "prompt": build_multi_prompt(len(window)),
+            "multi_modal_data": {"image": images[window.start : window.stop]},
+        }
+        for window in windows
+    ]
+    completions = _generate(prompts, NGRAM_WINDOW_MULTI, "window", report)
 
-    segments = [] if completion.truncated else postprocess.split_pages(completion.text)
-    reason = None
-    if completion.truncated:
-        reason = "hit the context limit"
-    elif len(segments) != len(images):
-        reason = f"returned {len(segments)} page sections instead of {len(images)}"
+    results: list[list[str] | None] = []
+    for window, completion in zip(windows, completions):
+        segments = [] if completion.truncated else postprocess.split_pages(completion.text)
+        reason = None
+        if completion.truncated:
+            reason = "hit the context limit"
+        elif len(segments) != len(window):
+            reason = f"returned {len(segments)} page sections instead of {len(window)}"
 
-    if reason:
-        message = (
-            f"pages {first_page + 1}-{last_page}: the long-context pass {reason}, "
-            "so these pages were parsed page by page"
-        )
-        print(f"[unlimited-ocr] {message}", flush=True)
-        warnings.append(message)
-        return None
+        if reason:
+            message = (
+                f"pages {window.start + 1}-{window.stop}: the long-context pass {reason}, "
+                "so these pages were parsed page by page"
+            )
+            print(f"[unlimited-ocr] {message}", flush=True)
+            report.warnings.append(message)
+            results.append(None)
+        else:
+            results.append([postprocess.page_to_markdown(segment) for segment in segments])
+    return results
 
-    return [postprocess.page_to_markdown(segment) for segment in segments]
 
-
-def run_inference(request: OcrRequest, warnings: list[str]) -> list[str]:
+def run_inference(request: OcrRequest, report: JobReport) -> list[str]:
     """Parses the request and returns the Markdown for each input page, in order.
 
-    Without ``long_context`` (always the case for a single image) the whole request is
-    one per-page window. With it, the pages go through the long-context path window by
-    window, falling back to per-page inference where that path fails. The fallback is
-    not a way to hide a broken path: it is recorded in ``warnings`` and reported to the
-    app, because losing cross-page context is a quality regression the caller deserves
-    to know about — but losing the whole scan to it would be worse.
+    Without ``long_context`` (always the case for a single image) every page takes the
+    per-page path. With it, the windows of several pages go through the long-context
+    path, and the pages of the windows it fails on are parsed page by page, in one
+    batch together with any window of a single page. The fallback is not a way to hide
+    a broken path: it is recorded in ``report.warnings`` and reported to the app,
+    because losing cross-page context is a quality regression the caller deserves to
+    know about — but losing the whole scan to it would be worse.
 
-    If the long-context path raises, it is not tried again for the remaining windows:
-    the failure is as likely to be the path as the window, and each retry would cost a
-    full generation before failing the same way.
+    If the long-context call raises, every window counts as failed: the windows share
+    that call, and trying them again would cost a full generation before failing the
+    same way.
     """
+    images = request.images
     if not request.long_context:
-        return run_per_page(request.images, 0, warnings)
+        return run_per_page(images, range(len(images)), report)
 
-    markdowns: list[str] = []
-    long_context_works = True
-    for pages in page_windows(len(request.images), LONG_CONTEXT_WINDOW_PAGES):
-        images = request.images[pages.start : pages.stop]
-        window_markdown = None
-        # A window of one page has no context to carry; the single-page path is the
-        # configuration the model is tuned for there.
-        if long_context_works and len(images) > 1:
-            try:
-                window_markdown = run_long_context_window(images, pages.start, warnings)
-            except Exception as exc:  # noqa: BLE001 - fall back, but say so
-                long_context_works = False
-                message = (
-                    f"long-context parsing failed ({type(exc).__name__}: {exc}); "
-                    "parsed page by page instead, so context does not carry across pages"
-                )
-                print(f"[unlimited-ocr] {message}", flush=True)
-                warnings.append(message)
-        if window_markdown is None:
-            window_markdown = run_per_page(images, pages.start, warnings)
-        markdowns.extend(window_markdown)
+    markdowns: list[str | None] = [None] * len(images)
+    # A window of one page has no context to carry; the single-page path is the
+    # configuration the model is tuned for there.
+    windows = [
+        window
+        for window in page_windows(len(images), LONG_CONTEXT_WINDOW_PAGES)
+        if len(window) > 1
+    ]
+    if windows:
+        report.windows = len(windows)
+        try:
+            results = run_long_context_windows(images, windows, report)
+        except Exception as exc:  # noqa: BLE001 - fall back, but say so
+            results = [None] * len(windows)
+            message = (
+                f"long-context parsing failed ({type(exc).__name__}: {exc}); "
+                "parsed page by page instead, so context does not carry across pages"
+            )
+            print(f"[unlimited-ocr] {message}", flush=True)
+            report.warnings.append(message)
+        for window, pages in zip(windows, results):
+            if pages is not None:
+                report.parsed += 1
+                markdowns[window.start : window.stop] = pages
+
+    fallback = [index for index, markdown in enumerate(markdowns) if markdown is None]
+    if fallback:
+        for index, markdown in zip(fallback, run_per_page(images, fallback, report)):
+            markdowns[index] = markdown
     return markdowns
 
 
@@ -504,9 +639,9 @@ def handler(job: dict[str, Any]) -> dict[str, Any]:
     except InvalidInput as exc:
         return {"error": str(exc)}
 
-    warnings: list[str] = []
+    report = JobReport()
     try:
-        markdowns = run_inference(request, warnings)
+        markdowns = run_inference(request, report)
     except Exception as exc:  # noqa: BLE001 - surfaced to the client, not swallowed
         return {"error": f"inference failed: {type(exc).__name__}: {exc}"}
 
@@ -515,11 +650,13 @@ def handler(job: dict[str, Any]) -> dict[str, Any]:
         "pages": [{"index": i, "markdown": markdown} for i, markdown in enumerate(markdowns)],
         "empty_pages": empty_page_indexes(markdowns),
         "page_mode": "per_page",
+        "long_context": {"windows": report.windows, "parsed": report.parsed},
         "model": MODEL_NAME,
         "elapsed_ms": int((time.monotonic() - started) * 1000),
+        "stats": report.stats,
     }
-    if warnings:
-        result["warnings"] = warnings
+    if report.warnings:
+        result["warnings"] = report.warnings
     return result
 
 

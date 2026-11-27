@@ -3,7 +3,8 @@ package com.ocrapp.ocr
 /**
  * Flattens the Markdown that Unlimited-OCR emits into readable plain text.
  *
- * Used for the copy/share payload and for the text stored in history search — the
+ * Used for what Copy and Share give from the Result screen's Rendered view (the Raw
+ * view gives the Markdown source) and for the text stored in history search. The
  * original Markdown is kept alongside it, so this is deliberately lossy rather than
  * a reversible transform.
  */

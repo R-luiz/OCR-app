@@ -9,25 +9,35 @@ import kotlinx.coroutines.flow.Flow
 interface ScanDao {
 
     /**
-     * The history list, newest first, optionally filtered.
-     *
-     * [pattern] is a `LIKE` pattern matched against title and body, with `\` as its
-     * escape character; an empty one lists everything. A `LIKE` scan is plenty at the
-     * scale a personal scan history reaches; FTS would only add a shadow table to
-     * maintain.
+     * The whole history list, newest first. Every column it reads is in the scans
+     * index, so it never loads a text body.
      */
     @Query(
         """
-        SELECT id, createdAt, title, engine, thumbnailPath, pageCount,
-               substr(ltrim(plainText, char(9, 10, 13, 32)), 1, 200) AS preview
+        SELECT id, createdAt, title, engine, thumbnailPath, pageCount, preview
         FROM scans
-        WHERE :pattern = ''
-           OR title LIKE :pattern ESCAPE '\'
-           OR plainText LIKE :pattern ESCAPE '\'
         ORDER BY createdAt DESC
         """,
     )
-    fun observeSummaries(pattern: String): Flow<List<ScanSummary>>
+    fun observeSummaries(): Flow<List<ScanSummary>>
+
+    /**
+     * The history entries whose title or text contains a search, newest first.
+     *
+     * [pattern] is a `LIKE` pattern over the folded columns (see [searchKey]), with `\`
+     * as its escape character. A `LIKE` scan is plenty at the scale a personal scan
+     * history reaches; FTS would only add a shadow table to maintain.
+     */
+    @Query(
+        """
+        SELECT id, createdAt, title, engine, thumbnailPath, pageCount, preview
+        FROM scans
+        WHERE searchTitle LIKE :pattern ESCAPE '\'
+           OR searchText LIKE :pattern ESCAPE '\'
+        ORDER BY createdAt DESC
+        """,
+    )
+    fun searchSummaries(pattern: String): Flow<List<ScanSummary>>
 
     @Query("SELECT * FROM scans WHERE id = :id")
     suspend fun getById(id: Long): ScanEntity?
@@ -35,14 +45,42 @@ interface ScanDao {
     @Insert
     suspend fun insert(scan: ScanEntity): Long
 
-    @Query("UPDATE scans SET title = :title WHERE id = :id")
-    suspend fun rename(id: Long, title: String)
+    @Query("UPDATE scans SET title = :title, searchTitle = :searchTitle WHERE id = :id")
+    suspend fun rename(id: Long, title: String, searchTitle: String)
 
-    @Query("UPDATE scans SET plainText = :plainText WHERE id = :id")
-    suspend fun updatePlainText(id: Long, plainText: String)
+    /** Stores edited text; the draft it came from is spent. */
+    @Query(
+        """
+        UPDATE scans
+        SET markdown = :markdown, plainText = :plainText, preview = :preview,
+            searchText = :searchText, draftText = NULL
+        WHERE id = :id
+        """,
+    )
+    suspend fun updateText(id: Long, markdown: String?, plainText: String, preview: String, searchText: String)
 
-    @Query("UPDATE scans SET markdown = :markdown, plainText = :plainText WHERE id = :id")
-    suspend fun updateMarkdown(id: Long, markdown: String, plainText: String)
+    /** Replaces a scan's result with a new run on the same pages; any draft was of the old one. */
+    @Query(
+        """
+        UPDATE scans
+        SET engine = :engine, markdown = :markdown, plainText = :plainText, pageCount = :pageCount,
+            notice = :notice, preview = :preview, searchText = :searchText, draftText = NULL
+        WHERE id = :id
+        """,
+    )
+    suspend fun replaceContent(
+        id: Long,
+        engine: String,
+        markdown: String?,
+        plainText: String,
+        pageCount: Int,
+        notice: String?,
+        preview: String,
+        searchText: String,
+    )
+
+    @Query("UPDATE scans SET draftText = :draftText WHERE id = :id")
+    suspend fun updateDraft(id: Long, draftText: String?)
 
     @Query("SELECT thumbnailPath FROM scans WHERE id = :id")
     suspend fun thumbnailPath(id: Long): String?

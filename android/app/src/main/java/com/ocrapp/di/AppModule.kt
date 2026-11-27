@@ -3,11 +3,15 @@ package com.ocrapp.di
 import android.content.Context
 import androidx.room.Room
 import com.ocrapp.BuildConfig
+import com.ocrapp.auth.OcrAuthApi
+import com.ocrapp.auth.SignInStore
 import com.ocrapp.data.OcrDatabase
 import com.ocrapp.data.ScanDao
 import com.ocrapp.data.SettingsStore
+import com.ocrapp.ocr.OcrBackends
+import com.ocrapp.ocr.OcrConnectionProvider
+import com.ocrapp.ocr.OcrHosts
 import com.ocrapp.ocr.RunPodApi
-import com.ocrapp.ocr.RunPodCredentialsProvider
 import com.jakewharton.retrofit2.converter.kotlinx.serialization.asConverterFactory
 import dagger.Module
 import dagger.Provides
@@ -38,7 +42,11 @@ object AppModule {
 
     @Provides
     @Singleton
-    fun provideCredentialsProvider(settings: SettingsStore): RunPodCredentialsProvider = settings
+    fun provideConnectionProvider(settings: SettingsStore): OcrConnectionProvider = settings
+
+    @Provides
+    @Singleton
+    fun provideSignInStore(settings: SettingsStore): SignInStore = settings
 
     @Provides
     @Singleton
@@ -70,12 +78,35 @@ object AppModule {
 
     @Provides
     @Singleton
-    fun provideRunPodApi(client: OkHttpClient, json: Json): RunPodApi = Retrofit.Builder()
-        .baseUrl(RUNPOD_BASE_URL)
+    fun provideOcrBackends(client: OkHttpClient, json: Json): OcrBackends = OcrBackends(
+        runPod = retrofit(OcrHosts.RUNPOD_BASE_URL, client, json).create(RunPodApi::class.java),
+        managed = retrofit(OcrHosts.MANAGED_BASE_URL, client.withoutRedirects(), json)
+            .create(RunPodApi::class.java),
+    )
+
+    @Provides
+    @Singleton
+    fun provideOcrAuthApi(client: OkHttpClient, json: Json): OcrAuthApi =
+        retrofit(
+            OcrHosts.MANAGED_BASE_URL,
+            client.withoutRedirects().newBuilder().callTimeout(AUTH_CALL_TIMEOUT_SECONDS, TimeUnit.SECONDS).build(),
+            json,
+        ).create(OcrAuthApi::class.java)
+
+    private fun retrofit(baseUrl: String, client: OkHttpClient, json: Json): Retrofit = Retrofit.Builder()
+        .baseUrl(baseUrl)
         .client(client)
         .addConverterFactory(json.asConverterFactory("application/json".toMediaType()))
         .build()
-        .create(RunPodApi::class.java)
 
-    private const val RUNPOD_BASE_URL = "https://api.runpod.ai/"
+    private const val AUTH_CALL_TIMEOUT_SECONDS = 30L
 }
+
+/**
+ * The managed service answers where it is addressed. A redirect would carry the pages
+ * of a document to a host nobody chose, so it is an error rather than a detour.
+ */
+internal fun OkHttpClient.withoutRedirects(): OkHttpClient = newBuilder()
+    .followRedirects(false)
+    .followSslRedirects(false)
+    .build()

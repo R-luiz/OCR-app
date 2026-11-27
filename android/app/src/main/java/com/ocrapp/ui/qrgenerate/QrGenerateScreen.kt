@@ -3,7 +3,9 @@ package com.ocrapp.ui.qrgenerate
 import android.Manifest
 import android.content.Intent
 import android.content.pm.PackageManager
+import android.net.Uri
 import android.os.Build
+import android.provider.Settings
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.Image
@@ -18,7 +20,6 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
-import androidx.compose.material.icons.filled.Save
 import androidx.compose.material.icons.filled.Share
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.Icon
@@ -26,8 +27,10 @@ import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Scaffold
+import androidx.compose.material3.SnackbarDuration
 import androidx.compose.material3.SnackbarHost
 import androidx.compose.material3.SnackbarHostState
+import androidx.compose.material3.SnackbarResult
 import androidx.compose.material3.Text
 import androidx.compose.material3.TopAppBar
 import androidx.compose.runtime.Composable
@@ -46,6 +49,8 @@ import androidx.core.content.ContextCompat
 import androidx.hilt.navigation.compose.hiltViewModel
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.ocrapp.R
+import com.ocrapp.ui.camera.findActivity
+import com.ocrapp.ui.icons.Save
 import kotlinx.coroutines.launch
 
 @OptIn(ExperimentalMaterial3Api::class)
@@ -61,13 +66,40 @@ fun QrGenerateScreen(
     val snackbarHostState = remember { SnackbarHostState() }
     val scope = rememberCoroutineScope()
     val shareChooserTitle = stringResource(R.string.qr_generate_share_chooser)
+    val shareFailedMessage = stringResource(R.string.qr_generate_share_failed)
+    val permissionNeededMessage = stringResource(R.string.qr_generate_permission_needed)
+    val openSettingsLabel = stringResource(R.string.qr_generate_open_settings)
 
     // Scoped storage (API 29+) needs no permission for MediaStore writes; API 28 —
     // the only level below that this app supports — still enforces the runtime grant.
     val needsLegacyStoragePermission = Build.VERSION.SDK_INT < Build.VERSION_CODES.Q
     val storagePermissionLauncher = rememberLauncherForActivityResult(
         ActivityResultContracts.RequestPermission(),
-    ) { granted -> if (granted) viewModel.save() }
+    ) { granted ->
+        if (granted) {
+            viewModel.save()
+            return@rememberLauncherForActivityResult
+        }
+        // After a "Don't ask again" Android answers at once without a dialog; the app's
+        // system settings are then the only place left to grant it.
+        val isBlocked = context.findActivity()
+            ?.shouldShowRequestPermissionRationale(Manifest.permission.WRITE_EXTERNAL_STORAGE) == false
+        scope.launch {
+            val choice = snackbarHostState.showSnackbar(
+                message = permissionNeededMessage,
+                actionLabel = openSettingsLabel.takeIf { isBlocked },
+                duration = if (isBlocked) SnackbarDuration.Long else SnackbarDuration.Short,
+            )
+            if (choice == SnackbarResult.ActionPerformed) {
+                context.startActivity(
+                    Intent(
+                        Settings.ACTION_APPLICATION_DETAILS_SETTINGS,
+                        Uri.fromParts("package", context.packageName, null),
+                    ),
+                )
+            }
+        }
+    }
 
     messageRes?.let { res ->
         val message = stringResource(res)
@@ -112,7 +144,11 @@ fun QrGenerateScreen(
                         enabled = hasImage,
                         onClick = {
                             scope.launch {
-                                val uri = viewModel.prepareShareUri() ?: return@launch
+                                val uri = viewModel.prepareShareUri()
+                                if (uri == null) {
+                                    snackbarHostState.showSnackbar(shareFailedMessage)
+                                    return@launch
+                                }
                                 val send = Intent(Intent.ACTION_SEND).apply {
                                     type = "image/png"
                                     putExtra(Intent.EXTRA_STREAM, uri)
@@ -160,7 +196,7 @@ private fun QrPreview(result: QrGenerateResult) {
     when (result) {
         is QrGenerateResult.Success -> Image(
             bitmap = result.bitmap.asImageBitmap(),
-            contentDescription = null,
+            contentDescription = stringResource(R.string.qr_generate_image_description),
             modifier = Modifier
                 .fillMaxWidth()
                 .aspectRatio(1f)

@@ -1,9 +1,9 @@
 <?xml version="1.0" encoding="utf-8"?>
 <!--
-  Every request to the backend carries `Authorization: Bearer <api key>`, a
-  credential that can spend money on the user's RunPod account. Refusing cleartext
-  outright means a mistyped or tampered endpoint host can never downgrade that
-  header onto plain HTTP.
+  Every request to a backend carries `Authorization: Bearer <credential>`: the
+  user's own RunPod API key, or the managed service's session. Either can spend
+  money, so refusing cleartext outright means a mistyped or tampered endpoint host
+  can never downgrade that header onto plain HTTP.
 -->
 <network-security-config>
     <base-config cleartextTrafficPermitted="false" />

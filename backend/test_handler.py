@@ -13,7 +13,7 @@ import io
 from types import SimpleNamespace
 
 import pytest
-from PIL import Image
+from PIL import Image, PngImagePlugin
 
 import handler
 from handler import (
@@ -102,6 +102,51 @@ class TestDecodeImage:
     def test_allows_images_within_the_pixel_budget(self):
         assert decode_image(_png_data_url(size=(1024, 1024))).size == (1024, 1024)
 
+    def test_rejects_excessive_png_text_on_a_small_page(self):
+        metadata = PngImagePlugin.PngInfo()
+        metadata.add_text("Description", "a" * (1024 * 1024 + 1))
+        buffer = io.BytesIO()
+        Image.new("RGB", (8, 8)).save(buffer, format="PNG", pnginfo=metadata)
+
+        with pytest.raises(InvalidInput, match="text chunks"):
+            decode_image(base64.b64encode(buffer.getvalue()).decode())
+
+    @pytest.mark.parametrize("image_format", ["GIF", "BMP", "TIFF"])
+    def test_decodes_only_the_formats_clients_send(self, image_format):
+        buffer = io.BytesIO()
+        Image.new("RGB", (8, 8), (0, 0, 0)).save(buffer, format=image_format)
+
+        with pytest.raises(InvalidInput, match="could not decode image bytes"):
+            decode_image(base64.b64encode(buffer.getvalue()).decode())
+
+    def test_accepts_webp(self):
+        buffer = io.BytesIO()
+        Image.new("RGB", (8, 8), (0, 0, 0)).save(buffer, format="WEBP")
+
+        assert decode_image(base64.b64encode(buffer.getvalue()).decode()).size == (8, 8)
+
+    def test_a_page_the_app_sends_keeps_its_size(self):
+        # RemoteOcrEngine sends a single page at up to 1920 px on the long edge.
+        assert decode_image(_bare_base64_jpeg(size=(1920, 1440))).size == (1920, 1440)
+
+    def test_a_page_larger_than_the_model_reads_is_shrunk_to_it(self, monkeypatch):
+        monkeypatch.setattr(handler, "MODEL_PAGE_PIXELS", 100 * 100)
+
+        image = decode_image(_png_data_url(size=(400, 200)))
+
+        assert image.size == (140, 70)
+        assert image.mode == "RGB"
+
+    def test_a_large_jpeg_is_shrunk_too(self, monkeypatch):
+        monkeypatch.setattr(handler, "MODEL_PAGE_PIXELS", 100 * 50)
+
+        assert decode_image(_bare_base64_jpeg(size=(800, 400))).size == (100, 50)
+
+    def test_default_bounds_admit_what_the_model_reads_and_the_app_sends(self):
+        assert handler.MAX_IMAGE_PIXELS >= handler.MODEL_PAGE_PIXELS
+        # The app's largest job: MAX_PAGES pages of up to 1024 px on the long edge.
+        assert handler.MAX_TOTAL_PIXELS >= handler.MAX_PAGES * 1024 * 1024
+
 
 class TestParseRequest:
     def test_request_holds_only_the_images_and_the_long_context_flag(self):
@@ -157,6 +202,20 @@ class TestParseRequest:
         monkeypatch.setattr(handler, "MAX_PAGES", 2)
         with pytest.raises(InvalidInput, match="limit is 2"):
             handler.parse_request({"images": [_png_data_url()] * 3})
+
+    def test_the_size_of_the_whole_job_is_checked_before_any_page_is_decoded(self, monkeypatch):
+        monkeypatch.setattr(handler, "MAX_TOTAL_PIXELS", 3 * 8 * 8)
+        monkeypatch.setattr(
+            handler, "load_image", lambda image: pytest.fail("no page may be decoded")
+        )
+
+        with pytest.raises(InvalidInput, match="256 pixels in all, limit is 192"):
+            parse_request({"images": [_png_data_url()] * 4})
+
+    def test_a_job_within_the_total_budget_is_decoded(self, monkeypatch):
+        monkeypatch.setattr(handler, "MAX_TOTAL_PIXELS", 3 * 8 * 8)
+
+        assert len(parse_request({"images": [_png_data_url()] * 3}).images) == 3
 
 
 class TestNoRepeatNGramLogitsProcessor:
@@ -296,9 +355,15 @@ class TestPageWindows:
 # --------------------------------------------------------------------------------------
 
 
-def _completion(text, finish_reason="stop"):
-    """What vLLM's generate() returns per prompt: ``.outputs[0].text`` and friends."""
-    return SimpleNamespace(outputs=[SimpleNamespace(text=text, finish_reason=finish_reason)])
+def _completion(text, finish_reason="stop", prompt_tokens=10):
+    """What vLLM's generate() returns per prompt: ``.outputs[0].text`` and friends, with
+    ``prompt_tokens`` prompt tokens and one output token per character."""
+    return SimpleNamespace(
+        prompt_token_ids=[0] * prompt_tokens,
+        outputs=[
+            SimpleNamespace(text=text, finish_reason=finish_reason, token_ids=[0] * len(text))
+        ],
+    )
 
 
 class FakeEngine:
@@ -313,7 +378,9 @@ class FakeEngine:
         self.calls = []
 
     def generate(self, prompts, sampling):
-        self.calls.append(SimpleNamespace(prompts=prompts, ngram_window=sampling))
+        self.calls.append(SimpleNamespace(
+            prompts=prompts, ngram_window=sampling.ngram_window, max_tokens=sampling.max_tokens,
+        ))
         if not self.script:
             raise AssertionError("unexpected generate() call")
         step = self.script.pop(0)
@@ -326,9 +393,15 @@ class FakeEngine:
 def engine(monkeypatch):
     fake = FakeEngine()
     monkeypatch.setattr(handler, "get_engine", lambda: fake)
-    # The real one imports vLLM. Here the "sampling params" are just the n-gram window,
-    # which the fake engine records per call.
-    monkeypatch.setattr(handler, "_sampling_params", lambda ngram_window: ngram_window)
+    # The real one imports vLLM. Here the "sampling params" are just the n-gram window
+    # and the output cap, which the fake engine records per call.
+    monkeypatch.setattr(
+        handler,
+        "_sampling_params",
+        lambda ngram_window, max_tokens: SimpleNamespace(
+            ngram_window=ngram_window, max_tokens=max_tokens,
+        ),
+    )
     return fake
 
 
@@ -372,6 +445,7 @@ class TestHandlerSinglePage:
         assert result["pages"] == [{"index": 0, "markdown": expected}]
         assert result["empty_pages"] == []
         assert result["page_mode"] == "per_page"
+        assert result["long_context"] == {"windows": 0, "parsed": 0}
         assert result["model"] == handler.MODEL_NAME
         assert isinstance(result["elapsed_ms"], int)
         assert "warnings" not in result
@@ -414,10 +488,14 @@ class TestHandlerSinglePage:
         result = handler.handler(_job(1))
 
         assert result["markdown"] == "partial"
-        assert result["warnings"] == ["page 1: output was cut off at the context limit"]
+        assert result["warnings"] == [
+            "page 1: output reached the per-page output limit and was cut off"
+        ]
 
     def test_a_completion_without_a_finish_reason_is_not_truncated(self, engine):
-        engine.script = [[SimpleNamespace(outputs=[SimpleNamespace(text=_raw("x"))])]]
+        engine.script = [[SimpleNamespace(
+            prompt_token_ids=None, outputs=[SimpleNamespace(text=_raw("x"), token_ids=[])],
+        )]]
 
         assert "warnings" not in handler.handler(_job(1))
 
@@ -476,6 +554,7 @@ class TestHandlerLongContext:
         ]
         assert result["markdown"] == "one\n\ntwo\n\nthree"
         assert result["empty_pages"] == []
+        assert result["long_context"] == {"windows": 1, "parsed": 1}
         assert "warnings" not in result
 
     def test_multiple_images_go_to_long_context_unless_the_default_is_off(self, engine, monkeypatch):
@@ -514,6 +593,7 @@ class TestHandlerLongContext:
         ]
         assert result["markdown"] == "one\n\ntwo\n\nthree"
         assert result["empty_pages"] == []
+        assert result["long_context"] == {"windows": 1, "parsed": 0}
         assert "page by page" in result["warnings"][0]
 
     def test_a_window_cut_off_at_the_context_limit_is_parsed_page_by_page(self, engine):
@@ -536,28 +616,29 @@ class TestHandlerLongContext:
         assert "page by page" in warning
         assert "context limit" in warning
 
-    def test_long_context_raising_falls_back_page_by_page_for_every_remaining_window(
+    def test_long_context_raising_fails_every_window_and_parses_all_pages_in_one_batch(
         self, engine, monkeypatch
     ):
         monkeypatch.setattr(handler, "LONG_CONTEXT_WINDOW_PAGES", 2)
         engine.script = [
             RuntimeError("boom"),
-            [_completion(_raw("one")), _completion(_raw("two"))],
-            [_completion(_raw("three")), _completion(_raw("four"))],
+            [_completion(_raw(text)) for text in ("one", "two", "three", "four")],
         ]
 
         result = handler.handler(_job(4))
 
-        # Long context was attempted once, on the first window, and not again.
-        assert [len(c.prompts) for c in engine.calls] == [1, 2, 2]
-        assert engine.calls[0].prompts[0]["prompt"] == IMAGE_TOKEN * 2 + "Multi page parsing."
-        for call in engine.calls[1:]:
-            assert [p["prompt"] for p in call.prompts] == [PROMPT_SINGLE] * 2
-            assert call.ngram_window == NGRAM_WINDOW_SINGLE
-        assert [_widths(c) for c in engine.calls[1:]] == [[[8], [9]], [[10], [11]]]
+        # Both windows went in the call that raised; their pages then went in one batch.
+        assert [len(c.prompts) for c in engine.calls] == [2, 4]
+        assert [p["prompt"] for p in engine.calls[0].prompts] == [
+            IMAGE_TOKEN * 2 + "Multi page parsing."
+        ] * 2
+        assert [p["prompt"] for p in engine.calls[1].prompts] == [PROMPT_SINGLE] * 4
+        assert engine.calls[1].ngram_window == NGRAM_WINDOW_SINGLE
+        assert _widths(engine.calls[1]) == [[8], [9], [10], [11]]
         assert engine.script == []
         assert result["page_mode"] == "per_page"
         assert result["markdown"] == "one\n\ntwo\n\nthree\n\nfour"
+        assert result["long_context"] == {"windows": 2, "parsed": 0}
         assert len(result["warnings"]) == 1
         assert "RuntimeError: boom" in result["warnings"][0]
         assert "context does not carry across pages" in result["warnings"][0]
@@ -578,26 +659,30 @@ class TestHandlerLongContext:
         assert call.ngram_window == NGRAM_WINDOW_SINGLE
         assert [p["prompt"] for p in call.prompts] == [PROMPT_SINGLE] * 3
         assert result["page_mode"] == "per_page"
+        assert result["long_context"] == {"windows": 0, "parsed": 0}
         assert result["markdown"] == "one\n\ntwo\n\nthree"
 
-    def test_more_pages_than_one_window_go_in_windows_of_the_sizes_page_windows_gives(
+    def test_every_window_goes_in_one_call_in_the_sizes_page_windows_gives(
         self, engine, monkeypatch
     ):
         monkeypatch.setattr(handler, "LONG_CONTEXT_WINDOW_PAGES", 3)
         sizes = [len(w) for w in page_windows(7, 3)]
         assert sizes == [3, 2, 2]
-        engine.script = [
-            [_completion(_raw("p1", "p2", "p3"))],
-            [_completion(_raw("p4", "p5"))],
-            [_completion(_raw("p6", "p7"))],
-        ]
+        engine.script = [[
+            _completion(_raw("p1", "p2", "p3")),
+            _completion(_raw("p4", "p5")),
+            _completion(_raw("p6", "p7")),
+        ]]
 
         result = handler.handler(_job(7))
 
-        assert [_widths(c) for c in engine.calls] == [[[8, 9, 10]], [[11, 12]], [[13, 14]]]
-        assert [len(_widths(c)[0]) for c in engine.calls] == sizes
+        (call,) = engine.calls
+        assert call.ngram_window == NGRAM_WINDOW_MULTI
+        assert _widths(call) == [[8, 9, 10], [11, 12], [13, 14]]
+        assert [len(widths) for widths in _widths(call)] == sizes
         _assert_every_image_has_a_placeholder(engine)
         assert result["page_mode"] == "per_page"
+        assert result["long_context"] == {"windows": 3, "parsed": 3}
         assert [p["markdown"] for p in result["pages"]] == [f"p{i}" for i in range(1, 8)]
         assert [p["index"] for p in result["pages"]] == list(range(7))
         assert result["markdown"] == "\n\n".join(f"p{i}" for i in range(1, 8))
@@ -615,13 +700,36 @@ class TestHandlerLongContext:
         assert engine.calls[1].prompts[0]["prompt"] == PROMPT_SINGLE
         assert _widths(engine.calls[1]) == [[10]]
         assert result["markdown"] == "p1\n\np2\n\np3"
+        assert result["long_context"] == {"windows": 1, "parsed": 1}
+
+    def test_failed_windows_and_a_one_page_window_share_one_page_by_page_batch(
+        self, engine, monkeypatch
+    ):
+        monkeypatch.setattr(handler, "LONG_CONTEXT_WINDOW_PAGES", 2)
+        assert page_windows(5, 2) == [range(0, 2), range(2, 4), range(4, 5)]
+        engine.script = [
+            [_completion(_raw("p1")), _completion(_raw("p3", "p4"))],  # one marker for two pages
+            [_completion(_raw("p1")), _completion(_raw("p2")), _completion(_raw("p5"))],
+        ]
+
+        result = handler.handler(_job(5))
+
+        assert [len(c.prompts) for c in engine.calls] == [2, 3]
+        assert _widths(engine.calls[1]) == [[8], [9], [12]]
+        assert [p["markdown"] for p in result["pages"]] == [f"p{i}" for i in range(1, 6)]
+        assert result["long_context"] == {"windows": 2, "parsed": 1}
+        assert result["warnings"] == [
+            "pages 1-2: the long-context pass returned 1 page sections instead of 2, "
+            "so these pages were parsed page by page"
+        ]
+        assert [s["kind"] for s in result["stats"]] == ["window", "pages"]
 
     def test_blank_pages_are_numbered_within_the_whole_document(self, engine, monkeypatch):
         monkeypatch.setattr(handler, "LONG_CONTEXT_WINDOW_PAGES", 3)
-        engine.script = [
-            [_completion(_raw("p1", "p2", "p3"))],
-            [_completion("<PAGE>p4<PAGE><PAGE>p6")],
-        ]
+        engine.script = [[
+            _completion(_raw("p1", "p2", "p3")),
+            _completion("<PAGE>p4<PAGE><PAGE>p6"),
+        ]]
 
         result = handler.handler(_job(6))
 
@@ -635,13 +743,16 @@ class TestHandlerLongContext:
     ):
         monkeypatch.setattr(handler, "LONG_CONTEXT_WINDOW_PAGES", 3)
         engine.script = [
-            [_completion("<PAGE>p1<PAGE><PAGE>p3")],  # exact, with a blank page 2
-            [_completion(_raw("p4", "p5"))],  # two markers for three pages
+            [
+                _completion("<PAGE>p1<PAGE><PAGE>p3"),  # exact, with a blank page 2
+                _completion(_raw("p4", "p5")),  # two markers for three pages
+            ],
             [_completion(_raw("p4")), _completion(_raw("p5")), _completion(_raw("p6"))],
         ]
 
         result = handler.handler(_job(6))
 
+        assert _widths(engine.calls[1]) == [[11], [12], [13]]
         assert result["markdown"] == "p1\n\np3\n\np4\n\np5\n\np6"
         assert result["empty_pages"] == [1]
         assert result["pages"][5] == {"index": 5, "markdown": "p6"}
@@ -654,8 +765,7 @@ class TestHandlerLongContext:
         # document as a whole keeps its boundaries.
         monkeypatch.setattr(handler, "LONG_CONTEXT_WINDOW_PAGES", 3)
         engine.script = [
-            [_completion(_raw("p1", "p2", "p3"))],
-            [_completion(_raw("p4", "p5"), "length")],
+            [_completion(_raw("p1", "p2", "p3")), _completion(_raw("p4", "p5"), "length")],
             [_completion(_raw("p4")), _completion(_raw("p5")), _completion(_raw("p6"))],
         ]
 
@@ -663,6 +773,7 @@ class TestHandlerLongContext:
 
         assert result["page_mode"] == "per_page"
         assert [p["markdown"] for p in result["pages"]] == [f"p{i}" for i in range(1, 7)]
+        assert result["long_context"] == {"windows": 2, "parsed": 1}
         assert len(result["warnings"]) == 1
         assert "pages 4-6" in result["warnings"][0]
 
@@ -671,14 +782,29 @@ class TestHandlerLongContext:
     ):
         monkeypatch.setattr(handler, "LONG_CONTEXT_WINDOW_PAGES", 2)
         engine.script = [
-            [_completion(_raw("p1", "p2"))],
-            RuntimeError("boom"),
+            [_completion(_raw("p1", "p2")), _completion(_raw("p3"))],
             [_completion(_raw("p3")), _completion(_raw("p4"), "length")],
         ]
 
         result = handler.handler(_job(4))
 
-        assert result["warnings"][-1] == "page 4: output was cut off at the context limit"
+        assert result["warnings"][-1] == (
+            "page 4: output reached the per-page output limit and was cut off"
+        )
+
+    def test_single_page_prompts_are_capped_and_windows_are_not(self, engine):
+        engine.script = [
+            [_completion("# no page markers")],
+            [_completion(_raw("one")), _completion(""), _completion(_raw("three"))],
+            [_completion(_raw("two"))],
+        ]
+
+        handler.handler(_job(3))
+
+        assert [c.max_tokens for c in engine.calls] == [
+            None, handler.PAGE_MAX_TOKENS, handler.PAGE_MAX_TOKENS,
+        ]
+        assert handler.PAGE_MAX_TOKENS == 8192
 
 
 class TestHandlerPerPage:
@@ -746,5 +872,29 @@ class TestHandlerPerPage:
 
         result = handler.handler(_job(3, long_context=False))
 
-        assert result["warnings"] == ["page 2: output was cut off at the context limit"]
+        assert result["warnings"] == [
+            "page 2: output reached the per-page output limit and was cut off"
+        ]
         assert result["markdown"] == "one\n\ntw\n\nthree"
+
+
+class TestHandlerStats:
+    def test_every_generate_call_is_reported_with_its_size(self, engine):
+        engine.script = [
+            [_completion(_raw("one")), _completion(""), _completion(_raw("three"))],
+            [_completion(_raw("two"), prompt_tokens=7)],
+        ]
+
+        result = handler.handler(_job(3, long_context=False))
+
+        stats = result["stats"]
+        assert [{key: value for key, value in s.items() if key != "ms"} for s in stats] == [
+            {
+                "kind": "pages",
+                "prompts": 3,
+                "prompt_tokens": 30,
+                "output_tokens": len(_raw("one")) + len(_raw("three")),
+            },
+            {"kind": "retry", "prompts": 1, "prompt_tokens": 7, "output_tokens": len(_raw("two"))},
+        ]
+        assert all(isinstance(s["ms"], int) and s["ms"] >= 0 for s in stats)

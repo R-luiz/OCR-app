@@ -35,11 +35,30 @@
     <string name="capture_scan_pending">Analyser (%1$d)</string>
     <string name="capture_discard_pending">Abandonner les pages photographiées</string>
     <string name="capture_discard_pending_body">Les photos de ce lot n’ont été ni analysées ni enregistrées.</string>
+    <string name="capture_stop_title">Arrêter ce scan ?</string>
+    <string name="capture_stop_body">Le serveur cesse de traiter ces pages. Recommencer oblige à attendre de nouveau le serveur.</string>
+    <string name="capture_stop_confirm">Arrêter le scan</string>
+    <string name="capture_error_dismiss">Fermer</string>
+    <plurals name="capture_batch_pages">
+        <item quantity="one">%1$d page dans ce lot</item>
+        <item quantity="many">%1$d pages dans ce lot</item>
+        <item quantity="other">%1$d pages dans ce lot</item>
+    </plurals>
+    <string name="capture_page_number">Page %1$d</string>
+    <string name="capture_page_review">Vérifier ou supprimer</string>
+    <string name="capture_page_keep">Garder</string>
+    <string name="capture_import_blocked">Pour importer des images ou un PDF, analysez ou abandonnez d’abord ces photos.</string>
+    <string name="capture_batch_full">Un scan prend au plus %1$d pages. Analysez celles-ci, puis commencez un nouveau lot.</string>
+    <string name="camera_permission_blocked">Dans les paramètres qui s’ouvrent, autorisez l’appareil photo sous Autorisations.</string>
+    <string name="camera_open_settings">Ouvrir les paramètres</string>
 
     <string name="mode_quick">Scan rapide</string>
     <string name="mode_document">Analyse de document</string>
-    <string name="mode_quick_hint">Sur l’appareil, fonctionne hors ligne</string>
-    <string name="mode_document_hint">Les pages sont envoyées à votre endpoint RunPod pour produire du Markdown mis en forme.</string>
+    <string name="mode_quick_hint">Sur l’appareil, hors ligne · alphabet latin uniquement</string>
+    <string name="mode_document_hint">Markdown mis en forme (titres, tableaux) produit par le serveur d’analyse de document. Le premier scan après une pause peut prendre jusqu’à 10 minutes.</string>
+    <string name="mode_document_setup_hint">Non configurée : les scans utiliseront le scan rapide sur l’appareil.</string>
+    <string name="mode_document_expired_hint">Connexion expirée : les scans utiliseront le scan rapide sur l’appareil jusqu’à votre reconnexion.</string>
+    <string name="mode_document_open_settings">Ouvrir les réglages</string>
 
     <string name="result_title">Résultat</string>
     <string name="result_engine_quick">Scan rapide · sur l\'appareil</string>
@@ -53,6 +72,10 @@
     <string name="result_discard_title">Abandonner vos modifications ?</string>
     <string name="result_discard_body">Les corrections apportées à ce scan n\'ont pas été enregistrées.</string>
     <string name="result_discard_confirm">Abandonner</string>
+    <string name="result_retry_document">Réessayer avec l’analyse de document</string>
+    <string name="result_retry_document_title">Réessayer avec l’analyse de document ?</string>
+    <string name="result_retry_document_body">L’analyse de document est relancée sur les pages de ce scan, ce qui peut prendre plusieurs minutes. Si elle réussit, son résultat remplace ce texte, corrections comprises.</string>
+    <string name="result_retry_document_confirm">Réessayer</string>
 
     <string name="settings_title">Réglages</string>
     <string name="settings_runpod_header">Serveur Unlimited-OCR</string>
@@ -63,7 +86,7 @@
     <string name="settings_read_failed">Impossible de lire les réglages enregistrés.</string>
     <string name="settings_save_failed">Impossible d’enregistrer les réglages.</string>
     <string name="settings_version">Version de l\'application %1$s</string>
-    <string name="settings_hint">L\'analyse de document envoie les pages à votre propre endpoint RunPod Serverless. Laissez vide pour n\'utiliser que le scan rapide sur l\'appareil.</string>
+    <string name="settings_hint">L\'analyse de document envoie les pages au serveur Unlimited-OCR : connectez-vous avec GitHub ci-dessous, ou utilisez votre propre endpoint RunPod dans les options avancées. Le scan rapide fonctionne sur l\'appareil sans l\'un ni l\'autre.</string>
     <string name="settings_reachable">Endpoint joignable</string>
     <string name="settings_reachable_workers">Endpoint joignable — %1$d prêts, %2$d inactifs, %3$d en cours</string>
     <string name="settings_unreachable">Endpoint injoignable : %1$s</string>
@@ -71,15 +94,42 @@
     <string name="settings_error_not_found">RunPod n\'a aucun endpoint avec cet ID</string>
     <string name="settings_error_network">pas de connexion réseau vers RunPod</string>
 
+    <string name="settings_managed_title">Service géré</string>
+    <string name="settings_managed_signed_out">Connectez-vous avec votre compte GitHub pour utiliser le service Unlimited-OCR hébergé. Aucun ID d\'endpoint ni clé d\'API à saisir, et votre mot de passe GitHub n\'est jamais saisi dans cette application.</string>
+    <string name="settings_managed_sign_in">Se connecter avec GitHub</string>
+    <string name="settings_managed_sign_in_again">Se reconnecter</string>
+    <string name="settings_managed_try_again">Réessayer</string>
+    <string name="settings_managed_in_browser">En attente de votre validation de la connexion sur GitHub, dans votre navigateur…</string>
+    <string name="settings_managed_finishing">Finalisation de la connexion…</string>
+    <string name="settings_managed_connected">Connecté · valable jusqu\'au %1$s</string>
+    <string name="settings_managed_disconnect">Se déconnecter</string>
+    <string name="settings_managed_expired">Votre connexion a expiré. L\'analyse de document utilise le scan rapide sur l\'appareil jusqu\'à ce que vous vous reconnectiez.</string>
+    <string name="settings_managed_error_network">pas de connexion réseau vers le service</string>
+    <string name="settings_open_failed">Aucune application ne peut ouvrir ce lien</string>
+    <string name="settings_signin_error_expired">La connexion a pris trop de temps ou son lien a déjà servi. Réessayez.</string>
+    <string name="settings_signin_error_denied">La connexion a été refusée sur GitHub.</string>
+    <string name="settings_signin_error_forbidden">Ce compte GitHub n\'est pas autorisé à utiliser le service.</string>
+    <string name="settings_signin_error_mismatch">Cette connexion n’a pas pu être vérifiée. Relancez-la depuis cette application.</string>
+    <string name="settings_signin_error_network">Impossible de joindre le service. Vérifiez votre connexion et réessayez.</string>
+    <string name="settings_signin_error_not_started">La connexion n’a pas pu démarrer sur cet appareil.</string>
+    <string name="settings_signin_error_service">Le service a renvoyé une réponse inutilisable. Réessayez plus tard.</string>
+    <string name="settings_signin_error_storage">Connecté, mais la connexion n\'a pas pu être enregistrée sur cet appareil.</string>
+    <string name="settings_advanced_title">Avancé : votre propre endpoint RunPod</string>
+    <string name="settings_advanced_expand">Afficher</string>
+    <string name="settings_advanced_collapse">Masquer</string>
+    <string name="settings_advanced_hint">Au lieu du service géré, les pages peuvent aller directement vers un endpoint RunPod Serverless qui vous appartient. L\'ID de l\'endpoint et la clé d\'API restent chiffrés sur cet appareil et ne sont envoyés qu\'à RunPod.</string>
+    <string name="settings_use_own_endpoint">Utiliser mon propre endpoint RunPod</string>
+    <string name="settings_direct_incomplete">Saisissez l\'ID de l\'endpoint et la clé d\'API pour utiliser votre propre endpoint.</string>
+
     <string name="progress_preparing">Préparation des pages…</string>
     <string name="progress_preparing_page">Préparation de la page %1$d sur %2$d…</string>
     <string name="progress_recognizing">Reconnaissance du texte…</string>
     <string name="progress_recognizing_page">Reconnaissance de la page %1$d sur %2$d…</string>
     <string name="progress_uploading">Envoi…</string>
-    <string name="progress_queued">En attente d\'un serveur GPU…</string>
+    <string name="progress_queued">En attente du serveur d’analyse de document…</string>
     <string name="progress_running">Analyse du document…</string>
     <string name="progress_saving">Enregistrement du scan…</string>
-    <string name="progress_cold_start">Votre endpoint GPU démarre. Le premier scan après une pause prend quelques minutes ; les suivants sont rapides.</string>
+    <string name="progress_cold_start">Un serveur en veille peut mettre jusqu’à 10 minutes à démarrer ; les scans suivants sont rapides. Vous pouvez utiliser d’autres applications en attendant.</string>
 
     <plurals name="pages_empty">
         <item quantity="one">Aucun texte reconnu sur la page %2$s — elle manque dans le résultat.</item>
@@ -92,16 +142,34 @@
         <item quantity="other">Seules les %2$d premières pages ont été scannées — %1$d autres ont été laissées de côté.</item>
     </plurals>
 
-    <string name="error_no_backend">Aucun serveur configuré — le scan rapide sur l\'appareil a été utilisé à la place.</string>
-    <string name="error_backend_unreachable">Serveur injoignable — le scan rapide sur l\'appareil a été utilisé à la place.</string>
-    <string name="error_backend_failed">Le serveur a renvoyé une erreur — le scan rapide sur l\'appareil a été utilisé à la place.</string>
-    <string name="error_no_text">Aucun texte trouvé.</string>
-    <string name="error_load_failed">Impossible de lire ce fichier.</string>
-    <string name="error_recognition_failed">La reconnaissance a échoué.</string>
-    <string name="error_capture_failed">Impossible de prendre la photo.</string>
+    <string name="error_no_backend">Analyse de document non configurée — le scan rapide sur l\'appareil a été utilisé à la place. Connectez-vous dans les réglages.</string>
+    <string name="error_session_expired">Connexion expirée ou refusée — le scan rapide sur l\'appareil a été utilisé à la place. Reconnectez-vous dans les réglages.</string>
+    <string name="error_backend_unreachable">Analyse de document indisponible — le scan rapide sur l’appareil a été utilisé à la place.</string>
+    <string name="error_backend_failed">L’analyse de document a échoué — le scan rapide sur l’appareil a été utilisé à la place.</string>
+    <string name="error_no_text">Aucun texte trouvé. Vérifiez que la page est nette, bien éclairée et remplit le cadre, puis réessayez.</string>
+    <string name="error_load_failed">Impossible de lire ce fichier. Essayez une autre image ou un autre PDF.</string>
+    <string name="error_recognition_failed">La reconnaissance a échoué. Réessayez, ou changez de mode de scan.</string>
+    <string name="error_capture_failed">Impossible de prendre la photo. Réessayez, ou importez une image à la place.</string>
     <string name="error_scan_missing">Ce scan n\'existe plus.</string>
-    <string name="error_scan_save_failed">Impossible d’enregistrer ce scan.</string>
+    <string name="error_scan_save_failed">Impossible d’enregistrer ce scan. Vérifiez qu’il reste de l’espace sur l’appareil, puis réessayez.</string>
     <string name="error_scan_update_failed">Impossible de modifier ce scan.</string>
+
+    <string name="retry_title">Relancer l’analyse de document</string>
+    <string name="retry_body">L’analyse de document est relancée sur les pages conservées de ce scan. En cas d’échec, le résultat précédent est conservé.</string>
+    <string name="retry_try_again">Réessayer</string>
+    <string name="retry_result_kept">Le résultat précédent est conservé.</string>
+    <string name="retry_error_pages_gone">Les pages de ce scan ne sont plus conservées. Photographiez-les ou importez-les de nouveau pour utiliser l’analyse de document.</string>
+    <string name="retry_error_not_set_up">L’analyse de document n’est pas configurée. Connectez-vous dans les réglages, puis réessayez.</string>
+    <string name="retry_error_session_expired">Votre connexion a expiré. Reconnectez-vous dans les réglages, puis réessayez.</string>
+    <string name="retry_error_unreachable">Le serveur d’analyse de document est injoignable ou n’a pas répondu à temps. Vérifiez votre connexion, puis réessayez.</string>
+    <string name="retry_error_failed">Le serveur d’analyse de document a renvoyé une erreur. Réessayez dans quelques minutes.</string>
+    <string name="retry_error_no_text">L’analyse de document n’a trouvé aucun texte sur ces pages.</string>
+
+    <string name="scan_channel_progress">Scans en cours</string>
+    <string name="scan_channel_outcome">Scans terminés</string>
+    <string name="scan_ready_title">Scan prêt</string>
+    <string name="scan_ready_body">Touchez pour ouvrir son texte.</string>
+    <string name="scan_failed_title">Le scan n’a pas abouti</string>
 
     <string name="qr_scan_title">Scanner un QR code</string>
     <string name="qr_scan_hint">Visez un QR code avec l\'appareil photo</string>
@@ -118,4 +186,8 @@
     <string name="qr_generate_share_chooser">Partager l\'image du QR code</string>
     <string name="qr_generate_saved">Enregistré dans Images</string>
     <string name="qr_generate_save_failed">Impossible d\'enregistrer l\'image</string>
+    <string name="qr_generate_share_failed">Impossible de préparer l’image pour le partage</string>
+    <string name="qr_generate_image_description">QR code du texte ci-dessous</string>
+    <string name="qr_generate_permission_needed">L’autorisation de stockage est nécessaire pour enregistrer dans la galerie</string>
+    <string name="qr_generate_open_settings">Ouvrir les réglages</string>
 </resources>

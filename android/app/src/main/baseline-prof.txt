@@ -1,0 +1,2 @@
+HSPLcom/ocrapp/**;->**(**)**
+Lcom/ocrapp/**;

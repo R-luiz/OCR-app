@@ -15,6 +15,7 @@ import kotlinx.coroutines.withContext
 import java.io.FileNotFoundException
 import javax.inject.Inject
 import javax.inject.Singleton
+import kotlin.math.ceil
 import kotlin.math.roundToInt
 
 /**
@@ -101,8 +102,13 @@ class PageLoader @Inject constructor(
             decoder.isMutableRequired = false
 
             // A photo holds no more detail than its pixels, so it is only ever shrunk.
-            val (width, height) = fitSize(info.size.width, info.size.height, maxEdge, upscale = false)
-            decoder.setTargetSize(width, height)
+            val sampleSize = decodeSampleSize(info.size.width, info.size.height, maxEdge)
+            if (sampleSize > 1) {
+                decoder.setTargetSampleSize(sampleSize)
+            } else {
+                val (width, height) = fitSize(info.size.width, info.size.height, maxEdge, upscale = false)
+                decoder.setTargetSize(width, height)
+            }
         }
     }
 
@@ -189,4 +195,21 @@ internal fun fitSize(width: Int, height: Int, maxEdge: Int, upscale: Boolean): P
     val ratio = maxEdge.toDouble() / longEdge
     return (width * ratio).roundToInt().coerceAtLeast(1) to
         (height * ratio).roundToInt().coerceAtLeast(1)
+}
+
+/**
+ * The whole-number factor an image of [width] x [height] is decoded at, or 1 to decode
+ * it at full size and scale it to [maxEdge] afterwards.
+ *
+ * A target size the decoder cannot reach by subsampling alone (any long edge between
+ * [maxEdge] and twice that, such as a 12 MP photo) makes it decode every pixel into a
+ * full-size temporary first: 48 MB for a 4032 x 3024 photo, to keep a quarter of it. A
+ * sample size is applied inside the JPEG decoder instead. It is taken whenever its
+ * output keeps at least 90 % of [maxEdge], and never exceeds it: 4032 gives 2016.
+ */
+internal fun decodeSampleSize(width: Int, height: Int, maxEdge: Int): Int {
+    val longEdge = maxOf(width, height)
+    if (longEdge <= maxEdge) return 1
+    val sample = ceil(longEdge / maxEdge.toDouble()).toInt()
+    return if (longEdge / sample >= maxEdge * 9 / 10) sample else 1
 }

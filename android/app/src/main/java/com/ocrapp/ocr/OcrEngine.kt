@@ -126,6 +126,13 @@ interface OcrEngine {
  */
 enum class FallbackReason {
     NOT_CONFIGURED,
+
+    /**
+     * The managed service's sign-in ran out or was refused. Distinct from
+     * [NOT_CONFIGURED] because the way out is to sign in again, and the app does not
+     * quietly use another backend in the meantime.
+     */
+    SESSION_EXPIRED,
     UNREACHABLE,
     BACKEND_ERROR,
 }

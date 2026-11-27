@@ -8,14 +8,7 @@ data class RunPodCredentials(
     val authorizationHeader: String get() = "Bearer $apiKey"
 
     val isComplete: Boolean get() = endpointId.isNotBlank() && apiKey.isNotBlank()
-}
 
-/**
- * Supplies RunPod credentials to [RemoteOcrEngine].
- *
- * Kept as an interface so the engine can be unit-tested against a MockWebServer
- * without pulling in EncryptedSharedPreferences.
- */
-fun interface RunPodCredentialsProvider {
-    suspend fun credentials(): RunPodCredentials?
+    /** Left out of logs and crash reports: the key can spend money on the user's account. */
+    override fun toString(): String = "RunPodCredentials(endpointId=$endpointId, apiKey=<redacted>)"
 }

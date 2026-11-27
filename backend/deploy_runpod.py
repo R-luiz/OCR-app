@@ -5,9 +5,14 @@ Everything the deployment needs is derivable from the repo except one thing: a
 RunPod API key, which is tied to an account with billing attached. Supply it as
 RUNPOD_API_KEY and this script does the rest.
 
-    python deploy_runpod.py --dry-run          # inspect account, create nothing
-    python deploy_runpod.py --confirm          # create/update the endpoint
-    python deploy_runpod.py --confirm --smoke-test path/to/page.png
+    python deploy_runpod.py --dry-run --image IMAGE    # inspect account, create nothing
+    python deploy_runpod.py --confirm --image IMAGE    # create/update the endpoint
+    python deploy_runpod.py --confirm --image IMAGE \\
+        --smoke-test page.png --smoke-test-expect "text printed on the page"
+
+IMAGE is an immutable reference to the worker image, such as
+ghcr.io/r-luiz/ocr-app/unlimited-ocr-worker:<commit-sha>. When the smoke test after a
+deploy fails, the endpoint goes back to the image it ran before (see --no-rollback).
 
 Idempotent by endpoint name: if an endpoint called ocr-app-unlimited-ocr already
 exists, it is updated in place instead of creating another billable endpoint.
@@ -23,11 +28,6 @@ import os
 import sys
 import time
 
-# Fallback only. CI passes --image with an immutable per-commit tag instead: ":latest"
-# is mutable, so it can still resolve to the previous build while a rebuild is in
-# flight, and a warm worker that already pulled it will not fetch it again — a deploy
-# that appears to succeed while changing nothing at all.
-DEFAULT_IMAGE = "ghcr.io/r-luiz/ocr-app/unlimited-ocr-worker:latest"
 ENDPOINT_NAME = "ocr-app-unlimited-ocr"
 TEMPLATE_NAME = "ocr-app-unlimited-ocr-template"
 
@@ -40,14 +40,30 @@ DEFAULT_GPU_IDS = "ADA_48_PRO,AMPERE_48"
 DEFAULT_CONTAINER_DISK_GB = 80
 
 POLL_INTERVAL_SECONDS = 5
+MAX_SMOKE_TEST_PAGES = 64  # the worker's default per-job page limit
 
 # RunPod refuses endpoint creation below this, and the error only surfaces after a
 # template has already been made. Checking up front keeps dry-run honest.
 MIN_BALANCE_USD = 0.01
 
+# What the checkpoint's ByteLevel tokenizer uses for a space and a newline. In OCR output
+# they mean the worker decoded tokens without that tokenizer's decoder.
+BYTE_LEVEL_SYMBOLS = ("\u0120", "\u010a")
+
 
 class DeployError(RuntimeError):
     pass
+
+
+def _in_github_actions() -> bool:
+    return os.environ.get("GITHUB_ACTIONS") == "true"
+
+
+def _mask(value: str | None) -> None:
+    """Keeps an account identifier out of this repository's GitHub Actions logs, which
+    are public: the runner prints *** for every later occurrence of ``value``."""
+    if value and _in_github_actions():
+        print(f"::add-mask::{value}", flush=True)
 
 
 def require_api_key() -> str:
@@ -65,6 +81,7 @@ def require_api_key() -> str:
 def find_endpoint(runpod, name: str) -> dict | None:
     for endpoint in runpod.get_endpoints():
         if endpoint.get("name") == name:
+            _mask(endpoint.get("id"))
             return endpoint
     return None
 
@@ -92,9 +109,10 @@ def check_balance(runpod) -> str | None:
     if balance is None:
         return None
     if balance < MIN_BALANCE_USD:
+        amount = "below" if _in_github_actions() else f"${balance:.2f}, below"
         return (
-            f"RunPod account balance is ${balance:.2f}. Creating an endpoint requires "
-            f"at least ${MIN_BALANCE_USD:.2f}.\n"
+            f"RunPod account balance is {amount} the ${MIN_BALANCE_USD:.2f} that creating "
+            "an endpoint requires.\n"
             "Add credit at https://console.runpod.io/user/billing and re-run."
         )
     return None
@@ -103,14 +121,17 @@ def check_balance(runpod) -> str | None:
 def summarize_account(runpod) -> None:
     endpoints = runpod.get_endpoints()
     print(f"account has {len(endpoints)} serverless endpoint(s)")
-    for endpoint in endpoints:
-        print(f"  - {endpoint.get('name')} ({endpoint.get('id')})")
+    # Logs of this repository's workflow runs are public: endpoint names, IDs and the
+    # balance stay out of them.
+    if not _in_github_actions():
+        for endpoint in endpoints:
+            print(f"  - {endpoint.get('name')} ({endpoint.get('id')})")
 
-    balance = account_balance(runpod)
-    if balance is None:
-        print("account balance: not reported by the API")
-    else:
-        print(f"account balance: ${balance:.2f}")
+        balance = account_balance(runpod)
+        if balance is None:
+            print("account balance: not reported by the API")
+        else:
+            print(f"account balance: ${balance:.2f}")
 
     try:
         gpus = runpod.get_gpus()
@@ -119,22 +140,28 @@ def summarize_account(runpod) -> None:
         print(f"could not list GPU types: {exc}")
 
 
-def deploy(runpod, args) -> str:
+def deploy(runpod, args) -> tuple[str, str | None]:
+    """Points the endpoint at ``args.image``, creating the endpoint if needed.
+
+    Returns the endpoint ID and the image it ran before, None for a new endpoint.
+    """
     existing = find_endpoint(runpod, ENDPOINT_NAME)
     placement = {"minCudaVersion": args.min_cuda_version} if args.min_cuda_version else {}
 
     if existing:
         endpoint_id = existing["id"]
-        print(f"updating {ENDPOINT_NAME} ({endpoint_id}) to {args.image}")
-        worker_settings = {"max": args.workers_max}
-        if args.init_timeout is not None:
-            worker_settings["initTimeout"] = args.init_timeout
+        previous_image = _get_endpoint(endpoint_id).get("image")
+        print(f"updating {ENDPOINT_NAME} ({endpoint_id}) from {previous_image} to {args.image}")
+        # Both timeouts are sent on every deploy, so the endpoint never keeps a value
+        # set by hand in the console or Runpod's defaults.
+        worker_settings = {"max": args.workers_max, "initTimeout": args.init_timeout}
         if existing["scaling"]["type"] == "QUEUE_DELAY":
             worker_settings["idleTimeout"] = args.idle_timeout
         changes = {
             "image": args.image,
             "disk": args.container_disk_gb,
             "workers": worker_settings,
+            "timeout": args.execution_timeout_ms,
             "flashboot": "FLASHBOOT",
         }
         if args.gpu_ids:
@@ -148,11 +175,11 @@ def deploy(runpod, args) -> str:
         print(
             f"  image {saved['image']}, workers {workers['min']}..{workers['max']}, "
             f"idleTimeout {workers.get('idleTimeout')}s, initTimeout {workers.get('initTimeout')}s, "
-            f"flashboot {saved['flashboot']}",
+            f"execution timeout {saved.get('timeout')}ms, flashboot {saved['flashboot']}",
         )
         gpu = saved["gpu"]
         print(f"  GPU pools: {', '.join(gpu['pools'])}; minimum CUDA: {gpu.get('minCudaVersion')}")
-        return endpoint_id
+        return endpoint_id, previous_image
 
     print(f"creating template from image {args.image}")
     template = runpod.create_template(
@@ -162,6 +189,7 @@ def deploy(runpod, args) -> str:
         container_disk_in_gb=args.container_disk_gb,
     )
     template_id = template["id"]
+    _mask(template_id)
     print(f"template {template_id}")
 
     gpu_ids = args.gpu_ids or DEFAULT_GPU_IDS
@@ -177,14 +205,68 @@ def deploy(runpod, args) -> str:
         flashboot=True,
     )
     endpoint_id = endpoint["id"]
-    changes = {}
+    _mask(endpoint_id)
+    changes = {
+        "workers": {"initTimeout": args.init_timeout},
+        "timeout": args.execution_timeout_ms,
+    }
     if placement:
         changes["gpu"] = placement
-    if args.init_timeout is not None:
-        changes["workers"] = {"initTimeout": args.init_timeout}
-    if changes:
-        _patch_endpoint(endpoint_id, changes)
-    return endpoint_id
+    _patch_endpoint(endpoint_id, changes)
+    return endpoint_id, None
+
+
+def verify_output(output: dict, pages: int, expect: list[str] | None = None) -> list[str]:
+    """Reasons a completed smoke-test job does not hold the document it was sent.
+
+    ``expect`` holds one string per image given to the smoke test; page ``i`` must
+    contain ``expect[i % len(expect)]``, matching how smoke_test repeats the images.
+    """
+    failures = []
+    markdown = output.get("markdown", "")
+    returned = output.get("pages") or []
+    if not markdown.strip():
+        failures.append("empty markdown")
+
+    # A plausible document can still be missing a page. Verify the exact response
+    # indexes and non-blank text, not just the length of the joined Markdown.
+    indexes = [page.get("index") for page in returned]
+    if indexes != list(range(pages)):
+        failures.append(f"expected page indexes 0–{pages - 1}, got {indexes}")
+    blank = [page.get("index") for page in returned if not str(page.get("markdown", "")).strip()]
+    if blank:
+        failures.append(
+            f"page(s) {blank} came back empty; their content is missing from the "
+            "document even though the job succeeded"
+        )
+
+    if any(symbol in markdown for symbol in BYTE_LEVEL_SYMBOLS):
+        failures.append(
+            "the markdown holds byte-level token symbols (U+0120 for a space, U+010A for "
+            "a newline): the worker decoded tokens without the checkpoint's ByteLevel decoder"
+        )
+
+    if expect:
+        for position, page in enumerate(returned):
+            text = expect[position % len(expect)]
+            if text not in str(page.get("markdown", "")):
+                failures.append(f"page {position + 1} does not contain {text!r}")
+
+    # Every app PDF has several pages; if they no longer go through the long-context
+    # path, the document loses its cross-page context while still looking complete.
+    if pages > 1:
+        counts = output.get("long_context")
+        windows = counts.get("windows") if isinstance(counts, dict) else None
+        if not (
+            isinstance(windows, int)
+            and windows > 0
+            and counts == {"windows": windows, "parsed": windows}
+        ):
+            failures.append(
+                f"long_context is {counts}; a multi-page job must send every window "
+                "through the long-context path and parse each of them there"
+            )
+    return failures
 
 
 def smoke_test(
@@ -193,11 +275,16 @@ def smoke_test(
     image_paths: list[str],
     timeout: int,
     pages: int = 1,
+    expect: list[str] | None = None,
 ) -> int:
-    """Submit real pages in order and require Markdown for every page."""
+    """Submit real pages in order and require the Markdown of every page.
+
+    ``expect`` is checked as in :func:`verify_output`.
+    """
     import urllib.error
     import urllib.request
 
+    _mask(endpoint_id)
     data_urls = []
     for image_path in image_paths:
         mime = mimetypes.guess_type(image_path)[0] or "image/png"
@@ -246,6 +333,7 @@ def smoke_test(
             print(f"  (transient: {exc.reason})")
             continue
 
+        _mask(job.get("workerId"))
         status = job.get("status")
         if status != last_status:
             print(f"  status: {status}")
@@ -266,38 +354,27 @@ def smoke_test(
         return 1
 
     markdown = output.get("markdown", "")
-    if not markdown.strip():
-        print(f"FAIL: empty markdown: {json.dumps(job)[:600]}", file=sys.stderr)
-        return 1
-
-    # A plausible document can still be missing a page. Verify the exact response
-    # indexes and non-blank text, not just the length of the joined Markdown.
     returned = output.get("pages") or []
-    blank = [page.get("index") for page in returned if not str(page.get("markdown", "")).strip()]
-    page_mode = output.get("page_mode", "per_page")
-    print(f"\npages: sent {pages}, returned {len(returned)}, blank {blank or 'none'}, "
-          f"mode {page_mode}")
+    print(f"\npages: sent {pages}, returned {len(returned)}, "
+          f"long_context {output.get('long_context')}")
     for warning in output.get("warnings") or []:
         print(f"  warning: {warning}")
-
-    indexes = [page.get("index") for page in returned]
-    if indexes != list(range(pages)):
+    for stat in output.get("stats") or []:
         print(
-            f"FAIL: expected page indexes 0–{pages - 1}, got {indexes}",
-            file=sys.stderr,
+            f"  generate ({stat.get('kind')}): {stat.get('prompts')} prompt(s), "
+            f"{stat.get('prompt_tokens')} prompt + {stat.get('output_tokens')} output "
+            f"tokens in {stat.get('ms')} ms"
         )
-        return 1
-    if blank:
-        print(
-            f"FAIL: page(s) {blank} came back empty; their content is missing from the "
-            "document even though the job succeeded",
-            file=sys.stderr,
-        )
-        return 1
-
     print(f"Runpod timing (ms): delay={job.get('delayTime')}, execution={job.get('executionTime')}")
-    print(f"OK — {len(markdown)} chars of markdown across {len(returned)} pages\n")
+    print()
     print(markdown[:2000])
+
+    failures = verify_output(output, pages, expect)
+    for failure in failures:
+        print(f"FAIL: {failure}", file=sys.stderr)
+    if failures:
+        return 1
+    print(f"\nOK — {len(markdown)} chars of markdown across {len(returned)} pages")
     return 0
 
 
@@ -372,6 +449,7 @@ def resolve_endpoint_id(given: str, api_key: str) -> str:
     contacted the endpoint.
     """
     if given:
+        _mask(given)
         return given
 
     import runpod
@@ -388,10 +466,17 @@ def resolve_endpoint_id(given: str, api_key: str) -> str:
 
 
 def _find_endpoint_by_id(runpod, endpoint_id: str) -> dict:
+    _mask(endpoint_id)
     for endpoint in runpod.get_endpoints():
         if endpoint.get("id") == endpoint_id:
             return endpoint
     raise DeployError(f"endpoint {endpoint_id} not found on this account")
+
+
+def _get_endpoint(endpoint_id: str) -> dict:
+    from runpod.api.rest import run_rest_request
+
+    return run_rest_request("GET", f"/v2/serverless/{endpoint_id}")
 
 
 def _patch_endpoint(endpoint_id: str, changes: dict) -> dict:
@@ -399,6 +484,23 @@ def _patch_endpoint(endpoint_id: str, changes: dict) -> dict:
     from runpod.api.rest import run_rest_request
 
     return run_rest_request("PATCH", f"/v2/serverless/{endpoint_id}", json=changes)
+
+
+def _roll_back(endpoint_id: str, previous_image: str | None, image: str) -> None:
+    """Puts the endpoint back on the image it ran before a deploy whose smoke test failed,
+    so a broken build does not keep serving the app."""
+    if not previous_image or previous_image == image:
+        print(f"no earlier image to roll back to; the endpoint stays on {image}", file=sys.stderr)
+        return
+    try:
+        saved = _patch_endpoint(endpoint_id, {"image": previous_image})
+    except Exception as exc:  # noqa: BLE001 - the smoke test failure is reported either way
+        print(f"error: rollback to {previous_image} failed: {type(exc).__name__}: {exc}", file=sys.stderr)
+        return
+    if saved.get("image") != previous_image:
+        print(f"error: Runpod did not confirm the rollback to {previous_image}", file=sys.stderr)
+        return
+    print(f"rolled back to {previous_image}")
 
 
 def _diagnose_startup(runpod, args, api_key: str) -> int:
@@ -416,6 +518,7 @@ def _diagnose_startup(runpod, args, api_key: str) -> int:
             args.smoke_test,
             args.smoke_test_timeout,
             args.smoke_test_pages,
+            args.smoke_test_expect,
         )
     finally:
         restored = _patch_endpoint(endpoint_id, {"env": env})
@@ -510,7 +613,14 @@ def purge_queue(endpoint_id: str, api_key: str) -> int:
 
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--image", default=DEFAULT_IMAGE)
+    # No default: ":latest" is mutable, so it can still resolve to the previous build
+    # while a rebuild is in flight, and a warm worker that already pulled it will not
+    # fetch it again — a deploy that appears to succeed while changing nothing at all.
+    parser.add_argument(
+        "--image",
+        help="worker image, required to deploy or dry-run: an immutable reference such as "
+        "ghcr.io/r-luiz/ocr-app/unlimited-ocr-worker:<commit-sha>",
+    )
     parser.add_argument("--gpu-ids", help="comma-separated GPU pools; defaults to the existing selection")
     parser.add_argument("--network-volume-id", default=os.environ.get("RUNPOD_NETWORK_VOLUME_ID") or None)
     parser.add_argument("--container-disk-gb", type=int, default=DEFAULT_CONTAINER_DISK_GB)
@@ -520,7 +630,21 @@ def main() -> int:
     # the worker for 5 minutes means one wait per sitting instead of one per scan,
     # at the cost of billing up to 5 idle GPU-minutes after each use.
     parser.add_argument("--idle-timeout", type=int, default=300)
-    parser.add_argument("--init-timeout", type=int, help="seconds allowed for worker initialization")
+    parser.add_argument(
+        "--init-timeout",
+        type=int,
+        default=900,
+        help="seconds a worker may take to start, image pull included; set on every "
+        "deploy. Measured on a host without the image: pull ~350 s, engine load 120-230 s, "
+        "past Runpod's 420 s default",
+    )
+    parser.add_argument(
+        "--execution-timeout-ms",
+        type=int,
+        default=900_000,
+        help="milliseconds a job may run before Runpod fails it and stops the worker; "
+        "set on every deploy",
+    )
     parser.add_argument("--min-cuda-version", help="minimum CUDA version the host driver must support")
     parser.add_argument("--workers-max", type=int, default=1)
     parser.add_argument("--dry-run", action="store_true", help="inspect the account, create nothing")
@@ -530,12 +654,24 @@ def main() -> int:
         help="required to create or modify anything; this provisions billable GPU capacity",
     )
     parser.add_argument("--smoke-test", nargs="+", metavar="IMAGE", help="after deploying, OCR these pages")
+    parser.add_argument(
+        "--smoke-test-expect",
+        action="append",
+        metavar="TEXT",
+        help="text the page made from each --smoke-test image must contain; once per "
+        "image, in the same order",
+    )
     parser.add_argument("--smoke-test-timeout", type=int, default=1800)
     parser.add_argument(
         "--smoke-test-pages",
         type=int,
         default=1,
         help="minimum pages to send; repeat the supplied pages in order if needed",
+    )
+    parser.add_argument(
+        "--no-rollback",
+        action="store_true",
+        help="leave the endpoint on the new image when the smoke test fails",
     )
     parser.add_argument(
         "--health-check",
@@ -560,6 +696,15 @@ def main() -> int:
     args = parser.parse_args()
     if args.diagnose_startup and (not args.confirm or args.dry_run or not args.smoke_test):
         parser.error("--diagnose-startup requires --confirm and --smoke-test")
+    other_action = args.diagnose_startup or any(
+        value is not None for value in (args.health_check, args.purge_queue, args.recycle_workers)
+    )
+    if not other_action and not args.image:
+        parser.error("--image is required to deploy or dry-run")
+    if args.smoke_test_expect and len(args.smoke_test_expect) != len(args.smoke_test or ()):
+        parser.error("--smoke-test-expect takes one TEXT per --smoke-test image")
+    if not 1 <= args.smoke_test_pages <= MAX_SMOKE_TEST_PAGES or len(args.smoke_test or ()) > MAX_SMOKE_TEST_PAGES:
+        parser.error(f"a smoke test must use 1 to {MAX_SMOKE_TEST_PAGES} pages")
 
     try:
         api_key = require_api_key()
@@ -629,6 +774,8 @@ def main() -> int:
         print(f"  container disk    {args.container_disk_gb} GB")
         print(f"  network volume    {args.network_volume_id or '(none — not required; weights are baked into the image)'}")
         print(f"  idle timeout      {args.idle_timeout}s")
+        print(f"  init timeout      {args.init_timeout}s")
+        print(f"  execution timeout {args.execution_timeout_ms}ms")
         print(f"  workers           0..{args.workers_max}")
         if not args.dry_run:
             print("\nRe-run with --confirm to apply. This provisions billable GPU capacity.")
@@ -642,23 +789,38 @@ def main() -> int:
         return 1
 
     try:
-        endpoint_id = deploy(runpod, args)
+        endpoint_id, previous_image = deploy(runpod, args)
     except Exception as exc:  # noqa: BLE001 - surface the provider's message verbatim
         print(f"error: deployment failed: {type(exc).__name__}: {exc}", file=sys.stderr)
         return 1
 
     print(f"\nendpoint id: {endpoint_id}")
-    print("Enter this ID and your API key in the app under Settings.")
+    print(
+        "In the app's Settings, enter this ID and a Runpod Restricted API key limited to "
+        "this endpoint (console.runpod.io > Settings > API Keys > Restricted, Read/Write "
+        "on this endpoint only). Keep the account-wide key for deploys: a key entered in "
+        "the app is stored on the phone, and that one controls the whole account."
+    )
 
-    if args.smoke_test:
-        return smoke_test(
+    if not args.smoke_test:
+        return 0
+    status = 1
+    try:
+        status = smoke_test(
             endpoint_id,
             api_key,
             args.smoke_test,
             args.smoke_test_timeout,
             args.smoke_test_pages,
+            args.smoke_test_expect,
         )
-    return 0
+    finally:
+        if status != 0:
+            if args.no_rollback:
+                print(f"--no-rollback: the endpoint stays on {args.image}", file=sys.stderr)
+            else:
+                _roll_back(endpoint_id, previous_image, args.image)
+    return status
 
 
 if __name__ == "__main__":
