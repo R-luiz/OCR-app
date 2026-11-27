@@ -11,6 +11,11 @@ on:
 permissions:
   contents: read
 
+env:
+  # The certificate check parses apksigner's output. Keep signing and verification
+  # on the same tested version instead of picking the runner's newest SDK.
+  APK_BUILD_TOOLS_VERSION: "36.0.0"
+
 jobs:
   # The signing secrets are repository secrets, and a dispatch runs the workflow and the
   # Gradle build of whichever ref it names. Only main may reach them: a dispatch on any
@@ -98,6 +103,13 @@ jobs:
           name: release-apks-debug-signed
           path: dist
 
+      - name: Set up APK build tools
+        shell: bash
+        run: |
+          if [ ! -x "$ANDROID_HOME/build-tools/$APK_BUILD_TOOLS_VERSION/apksigner" ]; then
+            sdkmanager --install "build-tools;$APK_BUILD_TOOLS_VERSION"
+          fi
+
       - name: Sign release APKs
         shell: bash
         env:
@@ -110,7 +122,7 @@ jobs:
           : "${OCR_KEYSTORE_PASSWORD:?Missing release keystore password}"
           : "${OCR_KEY_ALIAS:?Missing release key alias}"
           : "${OCR_KEY_PASSWORD:?Missing release key password}"
-          build_tools=$(find "$ANDROID_HOME/build-tools" -mindepth 1 -maxdepth 1 -type d | sort -V | tail -n 1)
+          build_tools="$ANDROID_HOME/build-tools/$APK_BUILD_TOOLS_VERSION"
           if [ ! -x "$build_tools/apksigner" ]; then
             echo "::error::No apksigner under $ANDROID_HOME/build-tools."
             exit 1
@@ -156,10 +168,17 @@ jobs:
           name: release-apks
           path: dist
 
+      - name: Set up APK build tools
+        shell: bash
+        run: |
+          if [ ! -x "$ANDROID_HOME/build-tools/$APK_BUILD_TOOLS_VERSION/apksigner" ]; then
+            sdkmanager --install "build-tools;$APK_BUILD_TOOLS_VERSION"
+          fi
+
       - name: Verify the release certificate
         shell: bash
         run: |
-          build_tools=$(find "$ANDROID_HOME/build-tools" -mindepth 1 -maxdepth 1 -type d | sort -V | tail -n 1)
+          build_tools="$ANDROID_HOME/build-tools/$APK_BUILD_TOOLS_VERSION"
           for apk in dist/*.apk; do
             digests=$("$build_tools/apksigner" verify --print-certs "$apk" \
               | sed -n 's/^Signer #[0-9]* certificate SHA-256 digest: //p')
