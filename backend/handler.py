@@ -293,6 +293,11 @@ def get_engine():
             dtype="bfloat16",
             max_model_len=MAX_MODEL_LEN,
             gpu_memory_utilization=GPU_MEMORY_UTILIZATION,
+            # Unlimited-OCR crops single images but not multi-image inputs. This
+            # vLLM build keys both modes by image content; disabling both caches
+            # gives each request its own image keys, as in the serving recipe.
+            enable_prefix_caching=False,
+            mm_processor_cache_gb=0,
             limit_mm_per_prompt={"image": MAX_PAGES},
             logits_processors=[NoRepeatNGramAdapter],
         )
