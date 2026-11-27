@@ -264,8 +264,7 @@ class NoRepeatNGramLogitsProcessor:
 def request_ngram_processor(extra_args: dict | None) -> NoRepeatNGramLogitsProcessor | None:
     """Builds the per-request processor from ``SamplingParams.extra_args``, or None.
 
-    Pure glue, kept separate from the vLLM adapter below so it stays testable on a
-    machine with no vLLM installed.
+    Kept separate from vLLM so the request-level behavior is testable without a GPU.
     """
     window = (extra_args or {}).get(EXTRA_ARG_NGRAM_WINDOW)
     if window is None:
@@ -280,35 +279,12 @@ def request_ngram_processor(extra_args: dict | None) -> NoRepeatNGramLogitsProce
 _engine = None
 
 
-def _adapter_class():
-    """The engine-level wrapper for the per-request n-gram processor.
-
-    vLLM's V1 engine (the only engine in the image's 0.23 build — SamplingParams no
-    longer accepts ``logits_processors``) takes processor *classes* at LLM
-    construction and instantiates a request-level callable per request via
-    ``new_req_logits_processor``. Defined lazily because importing vllm requires the
-    GPU stack, and the pure helpers above must stay importable without it.
-    """
-    from vllm.v1.sample.logits_processor import AdapterLogitsProcessor
-
-    class NoRepeatNGramAdapter(AdapterLogitsProcessor):
-        def is_argmax_invariant(self) -> bool:
-            # Banning tokens rewrites their logits to -inf, which can change the
-            # argmax; claiming invariance would let vLLM skip this processor
-            # entirely under greedy sampling — exactly our temperature=0 case.
-            return False
-
-        def new_req_logits_processor(self, params):
-            return request_ngram_processor(getattr(params, "extra_args", None))
-
-    return NoRepeatNGramAdapter
-
-
 def get_engine():
     """Builds the vLLM engine once per worker process and keeps it warm."""
     global _engine
     if _engine is None:
         from vllm import LLM
+        from ocr_logits import NoRepeatNGramAdapter
 
         _engine = LLM(
             model=MODEL_NAME,
@@ -318,7 +294,7 @@ def get_engine():
             max_model_len=MAX_MODEL_LEN,
             gpu_memory_utilization=GPU_MEMORY_UTILIZATION,
             limit_mm_per_prompt={"image": MAX_PAGES},
-            logits_processors=[_adapter_class()],
+            logits_processors=[NoRepeatNGramAdapter],
         )
     return _engine
 

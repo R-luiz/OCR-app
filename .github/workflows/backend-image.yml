@@ -10,6 +10,7 @@ on:
       - "backend/Dockerfile"
       - "backend/requirements.txt"
       - "backend/handler.py"
+      - "backend/ocr_logits.py"
       - "backend/postprocess.py"
       - ".github/workflows/backend-image.yml"
   workflow_dispatch:

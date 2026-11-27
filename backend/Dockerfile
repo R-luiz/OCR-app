@@ -29,7 +29,7 @@ ENV MODEL_NAME=/opt/models/unlimited-ocr \
     HF_HUB_OFFLINE=1 \
     TRANSFORMERS_OFFLINE=1
 
-COPY handler.py postprocess.py /app/
+COPY handler.py postprocess.py ocr_logits.py /app/
 
 # The base image's entrypoint starts vLLM's OpenAI server; RunPod needs our worker
 # loop, so ENTRYPOINT is cleared and CMD is exec'd directly — which means CMD has to
@@ -45,6 +45,11 @@ RUN ln -sf "$(command -v python3)" /usr/local/bin/ocr-worker-python \
  && /usr/local/bin/ocr-worker-python -c "import runpod, PIL.Image; print('interpreter + deps OK')" \
  && /usr/local/bin/ocr-worker-python -c "import handler; print('handler imports OK')" \
  && /usr/local/bin/ocr-worker-python -c "from handler import MODEL_NAME, VLLM_MODEL_TYPE; from vllm.transformers_utils.config import get_config; from vllm.transformers_utils.configs.unlimited_ocr import UnlimitedOCRConfig; config = get_config(MODEL_NAME, trust_remote_code=False, hf_overrides_kw={'model_type': VLLM_MODEL_TYPE}); assert isinstance(config, UnlimitedOCRConfig); print('native OCR model configuration OK')"
+
+RUN /usr/local/bin/ocr-worker-python -c "from multiprocessing.reduction import ForkingPickler; \
+    from ocr_logits import NoRepeatNGramAdapter; \
+    assert ForkingPickler.loads(ForkingPickler.dumps(NoRepeatNGramAdapter)) is NoRepeatNGramAdapter; \
+    print('OCR logits processor is spawn-serializable')"
 
 ENTRYPOINT []
 CMD ["/usr/local/bin/ocr-worker-python", "-u", "/app/handler.py"]
